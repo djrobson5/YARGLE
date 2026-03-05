@@ -141,6 +141,32 @@ pub fn write_dta_content(
     Ok(())
 }
 
+/// Write file content back to the same block offsets in-place (no size change)
+pub fn write_file_content_inplace(
+    data: &mut Vec<u8>,
+    content: &[u8],
+    block_offsets: &[u64],
+) -> Result<(), String> {
+    let mut remaining = content;
+    for &block_offset in block_offsets {
+        let offset = block_offset as usize;
+        let write_size = remaining.len().min(BLOCK_SIZE);
+
+        if offset + write_size > data.len() {
+            return Err(format!("Block offset 0x{:X} out of bounds", offset));
+        }
+
+        data[offset..offset + write_size].copy_from_slice(&remaining[..write_size]);
+        remaining = &remaining[write_size..];
+
+        if remaining.is_empty() {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
 /// Save modified data back to file
 pub fn save_to_file(path: &str, data: &[u8]) -> Result<(), String> {
     fs::write(path, data).map_err(|e| format!("Failed to write file: {}", e))

@@ -4,6 +4,7 @@ export interface SongSummary {
   description: string;
   title_name: string;
   has_thumbnail: boolean;
+  is_folder: boolean;
 }
 
 export interface SongMetadata {
@@ -34,6 +35,12 @@ export interface SongMetadata {
   author: string;
 }
 
+export interface ValidationIssue {
+  level: "Error" | "Warning" | "Info";
+  field: string;
+  message: string;
+}
+
 export interface SongDetails {
   path: string;
   display_name: string;
@@ -43,4 +50,75 @@ export interface SongDetails {
   metadata: SongMetadata;
   raw_dta: string;
   dta_file_size: number;
+  validation_issues: ValidationIssue[];
+}
+
+export interface SongValidationResult {
+  path: string;
+  display_name: string;
+  issues: ValidationIssue[];
+}
+
+export interface BatchValidateResult {
+  total_songs: number;
+  songs_with_errors: number;
+  songs_with_warnings: number;
+  songs_clean: number;
+  parse_failures: number;
+  results: SongValidationResult[];
+}
+
+export interface ChartOverview {
+  duration_ms: number;
+  total_measures: number;
+  ticks_per_quarter: number;
+  instruments: InstrumentSummary[];
+}
+
+export interface InstrumentSummary {
+  name: string;
+  track_name: string;
+  note_counts: DifficultyNoteCounts;
+  density: number[];
+}
+
+export interface DifficultyNoteCounts {
+  easy: number;
+  medium: number;
+  hard: number;
+  expert: number;
+}
+
+export interface InstrumentNotes {
+  instrument: string;
+  difficulty: string;
+  ticks_per_quarter: number;
+  tempo_changes: TempoEvent[];
+  time_signatures: TimeSigEvent[];
+  notes: ChartNote[];
+  overdrive_phrases: OverdrivePhrase[];
+  duration_ticks: number;
+}
+
+export interface OverdrivePhrase {
+  start_tick: number;
+  end_tick: number;
+}
+
+export interface ChartNote {
+  tick: number;
+  duration: number;
+  lane: number;
+  is_hopo: boolean;
+}
+
+export interface TempoEvent {
+  tick: number;
+  bpm: number;
+}
+
+export interface TimeSigEvent {
+  tick: number;
+  numerator: number;
+  denominator: number;
 }

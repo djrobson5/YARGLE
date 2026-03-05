@@ -1,5 +1,19 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ValidationLevel {
+    Error,
+    Warning,
+    Info,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationIssue {
+    pub level: ValidationLevel,
+    pub field: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SongMetadata {
     pub shortname: String,
@@ -37,6 +51,8 @@ pub struct SongSummary {
     pub description: String,
     pub title_name: String,
     pub has_thumbnail: bool,
+    #[serde(default)]
+    pub is_folder: bool,
 }
 
 /// Full details for the metadata editor
@@ -50,4 +66,5 @@ pub struct SongDetails {
     pub metadata: SongMetadata,
     pub raw_dta: String,
     pub dta_file_size: u32,
+    pub validation_issues: Vec<ValidationIssue>,
 }

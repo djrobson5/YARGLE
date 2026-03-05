@@ -131,7 +131,12 @@ impl StfsFilesystem {
     /// Get the file offset and size info for songs.dta (for write-back)
     pub fn get_songs_dta_location(&self) -> Result<(FileEntry, Vec<u64>), String> {
         let (_, entry) = self.extract_songs_dta()?;
+        let offsets = self.get_file_block_offsets(&entry)?;
+        Ok((entry, offsets))
+    }
 
+    /// Get the block offsets for any file entry
+    pub fn get_file_block_offsets(&self, entry: &FileEntry) -> Result<Vec<u64>, String> {
         let mut offsets = Vec::new();
         let mut current_block = entry.starting_block;
 
@@ -146,7 +151,26 @@ impl StfsFilesystem {
                 };
         }
 
-        Ok((entry, offsets))
+        Ok(offsets)
+    }
+
+    /// Find a .mogg file in the package
+    pub fn find_mogg_file(&self) -> Option<&FileEntry> {
+        self.files.iter().find(|f| {
+            !f.is_directory && f.name.to_lowercase().ends_with(".mogg")
+        })
+    }
+
+    /// Find a .mid file in the package
+    pub fn find_mid_file(&self) -> Option<&FileEntry> {
+        self.files.iter().find(|f| {
+            !f.is_directory && f.name.to_lowercase().ends_with(".mid")
+        })
+    }
+
+    /// Consume self and return the owned data buffer
+    pub fn into_data(self) -> Vec<u8> {
+        self.data
     }
 }
 

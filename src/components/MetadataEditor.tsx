@@ -1,5 +1,6 @@
-import React from "react";
-import type { SongDetails } from "../types";
+import React, { useState } from "react";
+import type { SongDetails, ValidationIssue } from "../types";
+import { ChartPreviewModal } from "./ChartPreviewModal";
 import { ImageEditor } from "./ImageEditor";
 import { IconSelector } from "./IconSelector";
 import { SongScores } from "./SongScores";
@@ -189,6 +190,7 @@ export function MetadataEditor({
   hasChanges,
   saving,
 }: MetadataEditorProps) {
+  const [showChart, setShowChart] = useState(false);
   const m = details.metadata;
 
   const numOrNull = (val: string): number | null => {
@@ -201,13 +203,21 @@ export function MetadataEditor({
     <div className="metadata-editor">
       <div className="editor-header">
         <h2>{m.name || details.display_name || "Untitled"}</h2>
-        <button
-          className={`save-btn ${hasChanges ? "has-changes" : ""}`}
-          onClick={onSave}
-          disabled={saving}
-        >
-          {saving ? "Saving..." : hasChanges ? "Save Changes" : "Save"}
-        </button>
+        <div className="editor-header-buttons">
+          <button
+            className="chart-btn"
+            onClick={() => setShowChart(true)}
+          >
+            Chart
+          </button>
+          <button
+            className={`save-btn ${hasChanges ? "has-changes" : ""}`}
+            onClick={onSave}
+            disabled={saving}
+          >
+            {saving ? "Saving..." : hasChanges ? "Save Changes" : "Save"}
+          </button>
+        </div>
       </div>
 
       <div className="editor-content">
@@ -365,6 +375,22 @@ export function MetadataEditor({
               onChange={(v) => onUpdateMeta("shortname", v)}
             />
           </section>
+
+          {details.validation_issues && details.validation_issues.length > 0 && (
+            <section className="validation-section">
+              <h3>Validation ({details.validation_issues.length} issues)</h3>
+              <div className="validation-box">
+                {details.validation_issues.map((issue: ValidationIssue, i: number) => (
+                  <div key={i} className={`validation-row validation-${issue.level.toLowerCase()}`}>
+                    <span className="validation-icon">
+                      {issue.level === "Error" ? "\u2716" : issue.level === "Warning" ? "\u26A0" : "\u2139"}
+                    </span>
+                    <span className="validation-message">{issue.message}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
         </div>
 
         <div className="editor-sidebar">
@@ -379,6 +405,13 @@ export function MetadataEditor({
           <SongScores songName={m.name} />
         </div>
       </div>
+
+      {showChart && (
+        <ChartPreviewModal
+          songPath={details.path}
+          onClose={() => setShowChart(false)}
+        />
+      )}
     </div>
   );
 }

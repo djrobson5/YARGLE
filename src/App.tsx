@@ -4,6 +4,12 @@ import { SearchBar } from "./components/SearchBar";
 import { FileList } from "./components/FileList";
 import { MetadataEditor } from "./components/MetadataEditor";
 import { ScoreSyncModal } from "./components/ScoreSyncModal";
+import { MoggDecryptModal } from "./components/MoggDecryptModal";
+import { DuplicateModal } from "./components/DuplicateModal";
+import { RenameModal } from "./components/RenameModal";
+import { BatchEditModal } from "./components/BatchEditModal";
+import { OrganizeModal } from "./components/OrganizeModal";
+import { ValidatorModal } from "./components/ValidatorModal";
 import { useSongFiles } from "./hooks/useSongFiles";
 
 function App() {
@@ -27,11 +33,19 @@ function App() {
 
   const [filter, setFilter] = useState("");
   const [showScoreSync, setShowScoreSync] = useState(false);
+  const [showMoggDecrypt, setShowMoggDecrypt] = useState(false);
+  const [showDuplicates, setShowDuplicates] = useState(false);
+  const [showRename, setShowRename] = useState(false);
+  const [showBatchEdit, setShowBatchEdit] = useState(false);
+  const [showOrganize, setShowOrganize] = useState(false);
+  const [showValidator, setShowValidator] = useState(false);
+  const [currentFolder, setCurrentFolder] = useState<string | null>(null);
 
   const handleOpenFolder = useCallback(async () => {
     try {
       const selected = await open({ directory: true, multiple: false });
       if (selected) {
+        setCurrentFolder(selected as string);
         openFolder(selected as string);
       }
     } catch (e) {
@@ -59,6 +73,12 @@ function App() {
           onChange={setFilter}
           onOpenFolder={handleOpenFolder}
           onOpenOptions={() => setShowScoreSync(true)}
+          onDecryptMoggs={() => setShowMoggDecrypt(true)}
+          onFindDuplicates={() => setShowDuplicates(true)}
+          onBatchRename={() => setShowRename(true)}
+          onBatchEdit={() => setShowBatchEdit(true)}
+          onOrganize={() => setShowOrganize(true)}
+          onValidate={() => setShowValidator(true)}
           songCount={songs.length}
         />
         <FileList
@@ -107,6 +127,63 @@ function App() {
       </div>
       {showScoreSync && (
         <ScoreSyncModal onClose={() => setShowScoreSync(false)} />
+      )}
+      {showMoggDecrypt && (
+        <MoggDecryptModal
+          paths={songs.map((s) => s.path)}
+          onClose={() => setShowMoggDecrypt(false)}
+        />
+      )}
+      {showDuplicates && (
+        <DuplicateModal
+          paths={songs.map((s) => s.path)}
+          onClose={(deleted) => {
+            setShowDuplicates(false);
+            if (deleted && currentFolder) {
+              openFolder(currentFolder);
+            }
+          }}
+        />
+      )}
+      {showRename && (
+        <RenameModal
+          paths={songs.map((s) => s.path)}
+          onClose={(renamed) => {
+            setShowRename(false);
+            if (renamed && currentFolder) {
+              openFolder(currentFolder);
+            }
+          }}
+        />
+      )}
+      {showOrganize && currentFolder && (
+        <OrganizeModal
+          paths={songs.map((s) => s.path)}
+          currentFolder={currentFolder}
+          onClose={(organized) => {
+            setShowOrganize(false);
+            if (organized && currentFolder) {
+              openFolder(currentFolder);
+            }
+          }}
+        />
+      )}
+      {showValidator && (
+        <ValidatorModal
+          paths={songs.map((s) => s.path)}
+          onClose={() => setShowValidator(false)}
+        />
+      )}
+      {showBatchEdit && (
+        <BatchEditModal
+          paths={songs.map((s) => s.path)}
+          onClose={(edited) => {
+            setShowBatchEdit(false);
+            if (edited && currentFolder) {
+              openFolder(currentFolder);
+            }
+          }}
+        />
       )}
     </div>
   );

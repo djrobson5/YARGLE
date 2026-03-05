@@ -25,7 +25,7 @@ export function FileList({ songs, selectedPath, filter, onSelect, modifiedPaths 
     return (
       <div className="file-list-empty">
         <p>No songs loaded</p>
-        <p className="hint">Click "Open Folder" to browse CON files</p>
+        <p className="hint">Click "Open Folder" to browse CON files and song folders</p>
       </div>
     );
   }
@@ -43,6 +43,7 @@ export function FileList({ songs, selectedPath, filter, onSelect, modifiedPaths 
       >
         <div className="song-name">
           {isModified && <span className="modified-dot" title="Unsaved changes" />}
+          {song.is_folder && <span className="folder-badge" title="Unpacked song folder">F</span>}
           {song.display_name || "(unnamed)"}
         </div>
         <div className="song-artist">{song.description}</div>
