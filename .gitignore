@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+src-tauri/target/
+
+# CON/STFS test files (large binary)
+*_rb3con
+*_rb3con.*
+Gram Parsons - *
+MazingerZRockanime
+
+# Misc
+album.jpeg
+song.ini
+*.log
+
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code local settings
+.claude/

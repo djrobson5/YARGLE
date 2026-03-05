@@ -1,0 +1,30 @@
+[package]
+name = "yargle"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "yargle_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "yargle"
+path = "src/main.rs"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+byteorder = "1"
+encoding_rs = "0.8"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+base64 = "0.22"
+texture2ddecoder = "0.0.5"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+chrono = "0.4"
+rusqlite = { version = "0.31", features = ["bundled"] }
+rayon = "1"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

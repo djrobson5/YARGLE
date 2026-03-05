@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none">
+<path d="M 255.79,0.09 H 0.11 V 255.91 H 255.79 V 0.09 Z" fill="url(#paint0_radial_23_188)"/>
+<path d="M 142.82,34.4 L 161.08,54.38 L 138.36,79.09 V 195.12 L 146.09,187.19 V 116.55 L 220.38,34.4 H 142.82 Z" fill="#C73A0A"/>
+<path d="M 116.89,107.51 L 94.72,83.72 H 48.42 L 108.84,149.66 V 228.31 L 116.89,220.11 V 107.51 Z" fill="#C73A0A"/>
+<path d="M 123.83,95.68 L 130.55,87.85 V 203.31 L 123.83,211.24 V 95.68 Z" fill="#C73A0A"/>
+<defs>
+<radialGradient id="paint0_radial_23_188" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(12.9994 205.547) scale(280.958 281.621)">
+<stop stop-color="#FFE600"/>
+<stop offset="0.0208333" stop-color="#FFDF02"/>
+<stop offset="0.1807" stop-color="#FDBF11"/>
+<stop offset="0.3258" stop-color="#FAA81C"/>
+<stop offset="0.4451" stop-color="#F99B21"/>
+<stop offset="0.5276" stop-color="#F89624"/>
+<stop offset="0.6531" stop-color="#F99E28"/>
+<stop offset="0.863" stop-color="#FCB633"/>
+<stop offset="1" stop-color="#FECA3D"/>
+</radialGradient>
+</defs>
+</svg>
