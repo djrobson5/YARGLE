@@ -913,7 +913,14 @@ pub async fn find_duplicates(
 pub fn delete_files(paths: Vec<String>) -> Result<Vec<String>, String> {
     let mut failures = Vec::new();
     for path in &paths {
-        if let Err(e) = fs::remove_file(path) {
+        let long_path = to_win_long_path(path);
+        let p = Path::new(&long_path);
+        let result = if p.is_dir() {
+            fs::remove_dir_all(&long_path)
+        } else {
+            fs::remove_file(&long_path)
+        };
+        if let Err(e) = result {
             failures.push(format!("{}: {}", path, e));
         }
     }
@@ -1047,6 +1054,17 @@ pub struct RenamePreview {
 struct RenamePreviewProgress {
     current: usize,
     total: usize,
+}
+
+/// Convert a path to Windows extended-length format (\\?\) to bypass MAX_PATH limits.
+/// On non-Windows or paths that already have the prefix, returns as-is.
+fn to_win_long_path(path: &str) -> String {
+    if cfg!(windows) && !path.starts_with("\\\\?\\") {
+        let normalized = path.replace('/', "\\");
+        format!("\\\\?\\{}", normalized)
+    } else {
+        path.to_string()
+    }
 }
 
 fn sanitize_filename(s: &str) -> String {
@@ -1217,7 +1235,9 @@ pub fn batch_rename(renames: Vec<RenameRequest>) -> Result<Vec<RenameResult>, St
             }
         }
 
-        match fs::rename(&req.old_path, &target) {
+        let src = to_win_long_path(&req.old_path);
+        let dst = to_win_long_path(&target.to_string_lossy());
+        match fs::rename(&src, &dst) {
             Ok(_) => results.push(RenameResult {
                 old_path: req.old_path,
                 new_path: target.to_string_lossy().to_string(),
@@ -1493,9 +1513,10 @@ pub fn execute_organize(requests: Vec<OrganizeRequest>) -> Result<Vec<RenameResu
     for req in requests {
         let target = PathBuf::from(&req.new_path);
 
-        // Create target directory
+        // Create target directory (use extended-length path for USB / long paths)
         if let Some(parent) = target.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
+            let parent_long = to_win_long_path(&parent.to_string_lossy());
+            if let Err(e) = fs::create_dir_all(&parent_long) {
                 results.push(RenameResult {
                     old_path: req.old_path,
                     new_path: target.to_string_lossy().to_string(),
@@ -1525,19 +1546,36 @@ pub fn execute_organize(requests: Vec<OrganizeRequest>) -> Result<Vec<RenameResu
             }
         }
 
-        match fs::rename(&req.old_path, &final_target) {
+        // Use extended-length path prefix on Windows for long paths / USB drives
+        let src_path = to_win_long_path(&req.old_path);
+        let dst_path = to_win_long_path(&final_target.to_string_lossy());
+
+        match fs::rename(&src_path, &dst_path) {
             Ok(_) => results.push(RenameResult {
                 old_path: req.old_path,
                 new_path: final_target.to_string_lossy().to_string(),
                 success: true,
                 error: String::new(),
             }),
-            Err(e) => results.push(RenameResult {
-                old_path: req.old_path,
-                new_path: final_target.to_string_lossy().to_string(),
-                success: false,
-                error: e.to_string(),
-            }),
+            Err(rename_err) => {
+                // Fallback: copy + delete (handles cross-volume moves)
+                match fs::copy(&src_path, &dst_path)
+                    .and_then(|_| fs::remove_file(&src_path))
+                {
+                    Ok(_) => results.push(RenameResult {
+                        old_path: req.old_path,
+                        new_path: final_target.to_string_lossy().to_string(),
+                        success: true,
+                        error: String::new(),
+                    }),
+                    Err(copy_err) => results.push(RenameResult {
+                        old_path: req.old_path,
+                        new_path: final_target.to_string_lossy().to_string(),
+                        success: false,
+                        error: format!("rename: {} / copy: {}", rename_err, copy_err),
+                    }),
+                }
+            }
         }
     }
 

@@ -323,6 +323,87 @@ body {
   cursor: not-allowed;
 }
 
+.delete-song-btn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  padding: 8px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.delete-song-btn:hover {
+  color: var(--error-text);
+  border-color: var(--error-text);
+}
+
+.delete-song-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.delete-confirm-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  margin-top: 8px;
+  background: var(--error-bg);
+  border: 1px solid var(--error-text);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--error-text);
+  flex-wrap: wrap;
+}
+
+.delete-confirm-btns {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.delete-confirm-yes {
+  background: var(--accent);
+  color: white;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.delete-confirm-yes:hover {
+  background: var(--accent-hover);
+}
+
+.delete-confirm-yes:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.delete-confirm-no {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  padding: 6px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.delete-confirm-no:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
+.delete-error {
+  color: var(--error-text);
+  font-size: 12px;
+}
+
 .editor-content {
   display: flex;
   gap: 24px;
@@ -1878,6 +1959,26 @@ section h3 {
   padding: 0;
   flex: 1;
   min-width: 200px;
+}
+
+.validator-category-filter {
+  flex: 1;
+  min-width: 0;
+}
+
+.validator-category-select {
+  width: 100%;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  outline: none;
+}
+
+.validator-category-select:focus {
+  border-color: var(--accent);
 }
 
 .validator-fixing {

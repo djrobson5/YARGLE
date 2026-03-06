@@ -253,33 +253,29 @@ export function ValidatorModal({ paths, onClose }: ValidatorModalProps) {
 
   const filteredResults: SongValidationResult[] = result
     ? result.results.filter((r) => {
-        if (filter === "all") return true;
-        return r.issues.some((i) => i.level === filter);
+        const levelMatch = filter === "all" || r.issues.some((i) => i.level === filter);
+        const fieldMatch = fieldFilter === "all" || r.issues.some((i) => i.field === fieldFilter);
+        return levelMatch && fieldMatch;
       })
     : [];
 
-  // Find the most common fixable field for batch fix
-  const batchFixCandidate = useMemo(() => {
-    if (!result || filteredResults.length === 0) return null;
+  // Collect all issue fields with counts (for category filter)
+  const allFieldCounts = useMemo(() => {
+    if (!result) return [];
     const fieldCounts: Record<string, number> = {};
-    for (const song of filteredResults) {
+    for (const song of result.results) {
       const issues = filter === "all" ? song.issues : song.issues.filter((i) => i.level === filter);
       for (const issue of issues) {
-        if (isFixable(issue)) {
-          fieldCounts[issue.field] = (fieldCounts[issue.field] || 0) + 1;
-        }
+        fieldCounts[issue.field] = (fieldCounts[issue.field] || 0) + 1;
       }
     }
-    let bestField: string | null = null;
-    let bestCount = 0;
-    for (const [field, count] of Object.entries(fieldCounts)) {
-      if (count > 1 && count > bestCount) {
-        bestField = field;
-        bestCount = count;
-      }
-    }
-    return bestField ? { field: bestField, count: bestCount } : null;
-  }, [result, filteredResults, filter]);
+    return Object.entries(fieldCounts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([field, count]) => ({ field, count, fixable: FIXABLE_FIELDS.has(field) }));
+  }, [result, filter]);
+
+  // Category filter state
+  const [fieldFilter, setFieldFilter] = useState<string>("all");
 
   const progressPct = progress
     ? Math.round((progress.current / progress.total) * 100)
@@ -364,28 +360,41 @@ export function ValidatorModal({ paths, onClose }: ValidatorModalProps) {
                   <button
                     key={lvl}
                     className={`validator-filter-btn ${filter === lvl ? "active" : ""}`}
-                    onClick={() => setFilter(lvl)}
+                    onClick={() => { setFilter(lvl); setFieldFilter("all"); }}
                   >
                     {lvl === "all" ? "All" : lvl + "s"}
                   </button>
                 ))}
               </div>
 
-              {/* Batch fix bar */}
-              {batchFixCandidate && !batchFixField && !batchFixProgress && (
+              {/* Category filter + batch fix */}
+              {allFieldCounts.length > 0 && !batchFixField && !batchFixProgress && (
                 <div className="validator-batch-bar">
-                  <span>
-                    {batchFixCandidate.count} songs have <strong>{batchFixCandidate.field.replace(/_/g, " ")}</strong> issues
-                  </span>
-                  <button
-                    className="validator-fix-btn"
-                    onClick={() => {
-                      setBatchFixField(batchFixCandidate.field);
-                      setBatchFixValue("");
-                    }}
-                  >
-                    Fix All
-                  </button>
+                  <div className="validator-category-filter">
+                    <select
+                      className="validator-category-select"
+                      value={fieldFilter}
+                      onChange={(e) => setFieldFilter(e.target.value)}
+                    >
+                      <option value="all">All categories</option>
+                      {allFieldCounts.map((f) => (
+                        <option key={f.field} value={f.field}>
+                          {f.field.replace(/_/g, " ")} ({f.count})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {fieldFilter !== "all" && FIXABLE_FIELDS.has(fieldFilter) && (
+                    <button
+                      className="validator-fix-btn"
+                      onClick={() => {
+                        setBatchFixField(fieldFilter);
+                        setBatchFixValue("");
+                      }}
+                    >
+                      Fix All
+                    </button>
+                  )}
                 </div>
               )}
 

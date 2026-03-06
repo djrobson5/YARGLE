@@ -12,6 +12,7 @@ interface MetadataEditorProps {
   onUpdateHeader: (field: "display_name" | "description", value: string) => void;
   onUpdateThumbnail: (base64: string) => void;
   onSave: () => void;
+  onDelete: (path: string) => Promise<void>;
   hasChanges: boolean;
   saving: boolean;
 }
@@ -187,10 +188,14 @@ export function MetadataEditor({
   onUpdateHeader,
   onUpdateThumbnail,
   onSave,
+  onDelete,
   hasChanges,
   saving,
 }: MetadataEditorProps) {
   const [showChart, setShowChart] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const m = details.metadata;
 
   const numOrNull = (val: string): number | null => {
@@ -217,7 +222,45 @@ export function MetadataEditor({
           >
             {saving ? "Saving..." : hasChanges ? "Save Changes" : "Save"}
           </button>
+          <button
+            className="delete-song-btn"
+            onClick={() => setConfirmDelete(true)}
+            disabled={deleting}
+          >
+            Delete
+          </button>
         </div>
+        {confirmDelete && (
+          <div className="delete-confirm-bar">
+            <span>Permanently delete this file? This cannot be undone.</span>
+            {deleteError && <span className="delete-error">{deleteError}</span>}
+            <div className="delete-confirm-btns">
+              <button
+                className="delete-confirm-yes"
+                disabled={deleting}
+                onClick={async () => {
+                  setDeleting(true);
+                  setDeleteError(null);
+                  try {
+                    await onDelete(details.path);
+                  } catch (e) {
+                    setDeleteError(String(e));
+                    setDeleting(false);
+                  }
+                }}
+              >
+                {deleting ? "Deleting..." : "Yes, Delete"}
+              </button>
+              <button
+                className="delete-confirm-no"
+                disabled={deleting}
+                onClick={() => { setConfirmDelete(false); setDeleteError(null); }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="editor-content">

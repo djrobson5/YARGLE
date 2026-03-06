@@ -28,6 +28,7 @@ function App() {
     updateHeader,
     updateThumbnail,
     saveSong,
+    deleteSong,
     setError,
   } = useSongFiles();
 
@@ -109,6 +110,7 @@ function App() {
             onUpdateHeader={updateHeader}
             onUpdateThumbnail={updateThumbnail}
             onSave={saveSong}
+            onDelete={deleteSong}
             hasChanges={modifiedFields.size > 0}
             saving={saving}
           />

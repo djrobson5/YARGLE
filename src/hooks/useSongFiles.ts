@@ -132,6 +132,20 @@ export function useSongFiles() {
     }
   }, [details, modifiedFields]);
 
+  const deleteSong = useCallback(async (path: string) => {
+    const failures = await invoke<string[]>("delete_files", { paths: [path] });
+    if (failures.length > 0) {
+      throw new Error(failures[0]);
+    }
+    setSongs(prev => prev.filter(s => s.path !== path));
+    setDetailsCache(prev => { const m = new Map(prev); m.delete(path); return m; });
+    if (selectedPath === path) {
+      setSelectedPath(null);
+      setDetails(null);
+      setModifiedFields(new Set());
+    }
+  }, [selectedPath]);
+
   return {
     songs,
     selectedPath,
@@ -148,6 +162,7 @@ export function useSongFiles() {
     updateHeader,
     updateThumbnail,
     saveSong,
+    deleteSong,
     setError,
   };
 }

@@ -20,13 +20,6 @@ pub fn validate_metadata(meta: &SongMetadata, has_thumbnail: bool) -> Vec<Valida
     }
 
     // Warnings — important but not fatal
-    if meta.shortname.trim().is_empty() {
-        issues.push(ValidationIssue {
-            level: ValidationLevel::Warning,
-            field: "shortname".into(),
-            message: "Shortname is empty".into(),
-        });
-    }
     if meta.genre.trim().is_empty() {
         issues.push(ValidationIssue {
             level: ValidationLevel::Warning,
@@ -119,21 +112,7 @@ pub fn validate_metadata(meta: &SongMetadata, has_thumbnail: bool) -> Vec<Valida
         });
     }
 
-    if meta.preview_start.is_none() {
-        issues.push(ValidationIssue {
-            level: ValidationLevel::Info,
-            field: "preview_start".into(),
-            message: "Preview start time is not set".into(),
-        });
-    }
 
-    if meta.rating.is_none() {
-        issues.push(ValidationIssue {
-            level: ValidationLevel::Info,
-            field: "rating".into(),
-            message: "Content rating is not set".into(),
-        });
-    }
 
     // Sort: errors first, then warnings, then info
     issues.sort_by(|a, b| a.level.cmp(&b.level));
