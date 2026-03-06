@@ -12,6 +12,11 @@ interface DuplicateEntry {
   display_name: string;
   description: string;
   file_size: number;
+  has_drums: boolean;
+  has_guitar: boolean;
+  has_bass: boolean;
+  has_vocals: boolean;
+  has_keys: boolean;
 }
 
 interface DuplicateGroup {
@@ -199,24 +204,33 @@ export function DuplicateModal({ paths, onClose }: DuplicateModalProps) {
                         {group.entries.length} copies
                       </span>
                     </div>
-                    {group.entries.map((entry) => (
-                      <label key={entry.path} className="duplicate-entry-row">
-                        <input
-                          type="checkbox"
-                          checked={selected.has(entry.path)}
-                          onChange={() => toggleSelect(entry.path, group)}
-                        />
-                        <div className="duplicate-entry-info">
-                          <div className="duplicate-entry-name">
-                            {fileName(entry.path)}
+                    <div className="rename-list" style={{ maxHeight: "none", marginBottom: 0 }}>
+                      {group.entries.map((entry) => (
+                        <label key={entry.path} className="rename-row">
+                          <input
+                            type="checkbox"
+                            checked={selected.has(entry.path)}
+                            onChange={() => toggleSelect(entry.path, group)}
+                          />
+                          <div className="rename-row-info">
+                            <div className="rename-current">
+                              {fileName(entry.path)}
+                            </div>
+                            <div className="duplicate-entry-meta">
+                              {formatSize(entry.file_size)}
+                              {entry.description && ` \u2014 ${entry.description}`}
+                            </div>
+                            <div className="duplicate-instruments">
+                              <span className={`inst-badge ${entry.has_drums ? "inst-active" : "inst-inactive"}`}>D</span>
+                              <span className={`inst-badge ${entry.has_guitar ? "inst-active" : "inst-inactive"}`}>G</span>
+                              <span className={`inst-badge ${entry.has_bass ? "inst-active" : "inst-inactive"}`}>B</span>
+                              <span className={`inst-badge ${entry.has_vocals ? "inst-active" : "inst-inactive"}`}>V</span>
+                              <span className={`inst-badge ${entry.has_keys ? "inst-active" : "inst-inactive"}`}>K</span>
+                            </div>
                           </div>
-                          <div className="duplicate-entry-meta">
-                            {formatSize(entry.file_size)}
-                            {entry.description && ` \u2014 ${entry.description}`}
-                          </div>
-                        </div>
-                      </label>
-                    ))}
+                        </label>
+                      ))}
+                    </div>
                   </div>
                 ))}
               </div>

@@ -687,6 +687,11 @@ pub struct DuplicateEntry {
     pub display_name: String,
     pub description: String,
     pub file_size: u64,
+    pub has_drums: bool,
+    pub has_guitar: bool,
+    pub has_bass: bool,
+    pub has_vocals: bool,
+    pub has_keys: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -722,9 +727,10 @@ pub async fn find_duplicates(
         DuplicateScanProgress { current: 0, total, phase: "Grouping by name...".into() },
     );
 
-    let mut name_groups: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
+    let mut name_groups: HashMap<String, Vec<(String, String, String, u64)>> = HashMap::new();
     for (i, path) in paths.iter().enumerate() {
         let p = Path::new(path);
+        let file_size = fs::metadata(p).map(|m| m.len()).unwrap_or(0);
         if p.is_dir() {
             if let Ok(content) = fs::read_to_string(p.join("song.ini")) {
                 let meta = song_ini::parse_song_ini(&content);
@@ -741,6 +747,7 @@ pub async fn find_duplicates(
                     path.clone(),
                     display_name,
                     description,
+                    file_size,
                 ));
             }
         } else if let Ok(data) = read_header_bytes(p) {
@@ -750,6 +757,7 @@ pub async fn find_duplicates(
                     path.clone(),
                     header.display_name,
                     header.description,
+                    file_size,
                 ));
             }
         }
@@ -791,9 +799,10 @@ pub async fn find_duplicates(
         },
     );
 
-    // Build path -> shortname map
+    // Build path -> shortname map and path -> instruments map
     let mut shortname_map: HashMap<String, String> = HashMap::new();
-    for (i, (path, _, _)) in candidates_flat.iter().enumerate() {
+    let mut instruments_map: HashMap<String, (bool, bool, bool, bool, bool)> = HashMap::new();
+    for (i, (path, _, _, _)) in candidates_flat.iter().enumerate() {
         let p = Path::new(path.as_str());
         if p.is_dir() {
             // For song folders, use the song name as shortname
@@ -802,6 +811,13 @@ pub async fn find_duplicates(
                 if !meta.name.is_empty() {
                     shortname_map.insert(path.clone(), meta.name.to_lowercase().replace(' ', ""));
                 }
+                instruments_map.insert(path.clone(), (
+                    meta.rank_drum.map_or(false, |r| r > 0),
+                    meta.rank_guitar.map_or(false, |r| r > 0),
+                    meta.rank_bass.map_or(false, |r| r > 0),
+                    meta.rank_vocals.map_or(false, |r| r > 0),
+                    meta.rank_keys.map_or(false, |r| r > 0),
+                ));
             }
         } else if let Ok(data) = fs::read(path) {
             if let Ok(stfs) = StfsFilesystem::parse(data) {
@@ -818,6 +834,13 @@ pub async fn find_duplicates(
                         if !meta.shortname.is_empty() {
                             shortname_map.insert(path.clone(), meta.shortname);
                         }
+                        instruments_map.insert(path.clone(), (
+                            meta.rank_drum.map_or(false, |r| r > 0),
+                            meta.rank_guitar.map_or(false, |r| r > 0),
+                            meta.rank_bass.map_or(false, |r| r > 0),
+                            meta.rank_vocals.map_or(false, |r| r > 0),
+                            meta.rank_keys.map_or(false, |r| r > 0),
+                        ));
                     }
                 }
             }
@@ -835,9 +858,9 @@ pub async fn find_duplicates(
     }
 
     // Re-group by shortname (or fall back to normalized display_name)
-    let mut final_groups: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
+    let mut final_groups: HashMap<String, Vec<(String, String, String, u64)>> = HashMap::new();
     for (_, entries) in &candidate_groups {
-        for (path, display_name, description) in entries {
+        for (path, display_name, description, file_size) in entries {
             let key = shortname_map
                 .get(path)
                 .cloned()
@@ -845,7 +868,7 @@ pub async fn find_duplicates(
             final_groups
                 .entry(key)
                 .or_default()
-                .push((path.clone(), display_name.clone(), description.clone()));
+                .push((path.clone(), display_name.clone(), description.clone(), *file_size));
         }
     }
 
@@ -857,13 +880,19 @@ pub async fn find_duplicates(
             let display_name = entries[0].1.clone();
             let entries = entries
                 .into_iter()
-                .map(|(path, display_name, description)| {
-                    let file_size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                .map(|(path, display_name, description, file_size)| {
+                    let (has_drums, has_guitar, has_bass, has_vocals, has_keys) =
+                        instruments_map.get(&path).copied().unwrap_or_default();
                     DuplicateEntry {
                         path,
                         display_name,
                         description,
                         file_size,
+                        has_drums,
+                        has_guitar,
+                        has_bass,
+                        has_vocals,
+                        has_keys,
                     }
                 })
                 .collect();
