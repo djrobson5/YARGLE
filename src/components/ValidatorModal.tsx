@@ -141,6 +141,9 @@ export function ValidatorModal({ paths, onClose }: ValidatorModalProps) {
   const [fixValue, setFixValue] = useState("");
   const [fixSaving, setFixSaving] = useState(false);
 
+  // Category filter state
+  const [fieldFilter, setFieldFilter] = useState<string>("all");
+
   // Batch fix state
   const [batchFixField, setBatchFixField] = useState<string | null>(null);
   const [batchFixValue, setBatchFixValue] = useState("");
@@ -273,9 +276,6 @@ export function ValidatorModal({ paths, onClose }: ValidatorModalProps) {
       .sort((a, b) => b[1] - a[1])
       .map(([field, count]) => ({ field, count, fixable: FIXABLE_FIELDS.has(field) }));
   }, [result, filter]);
-
-  // Category filter state
-  const [fieldFilter, setFieldFilter] = useState<string>("all");
 
   const progressPct = progress
     ? Math.round((progress.current / progress.total) * 100)
