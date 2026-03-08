@@ -5,6 +5,8 @@ export interface SongSummary {
   title_name: string;
   has_thumbnail: boolean;
   is_folder: boolean;
+  album_name: string;
+  author: string;
 }
 
 export interface SongMetadata {

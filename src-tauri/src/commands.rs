@@ -137,11 +137,28 @@ pub fn open_folder(path: String) -> Result<Vec<SongSummary>, String> {
                     title_name: meta.name,
                     has_thumbnail: find_folder_album_art(file_path).is_some(),
                     is_folder: true,
+                    album_name: meta.album_name,
+                    author: meta.author,
                 })
             } else {
                 // CON/STFS file
                 let data = read_header_bytes(file_path).ok()?;
                 let header = parse_header_summary(&data).ok()?;
+                // Try to extract album_name and author from DTA metadata
+                let (album_name, author) = fs::read(file_path).ok()
+                    .and_then(|full_data| {
+                        let stfs_fs = StfsFilesystem::parse(full_data).ok()?;
+                        let (dta_content, _) = stfs_fs.extract_songs_dta().ok()?;
+                        let raw_dta = String::from_utf8(dta_content.clone())
+                            .unwrap_or_else(|_| {
+                                let (decoded, _, _) = encoding_rs::WINDOWS_1252.decode(&dta_content);
+                                decoded.to_string()
+                            });
+                        let nodes = parse_dta(&raw_dta).ok()?;
+                        let meta = extract_metadata(&nodes, &raw_dta);
+                        Some((meta.album_name, meta.author))
+                    })
+                    .unwrap_or_default();
                 Some(SongSummary {
                     path: file_path.to_string_lossy().to_string(),
                     display_name: header.display_name,
@@ -149,6 +166,8 @@ pub fn open_folder(path: String) -> Result<Vec<SongSummary>, String> {
                     title_name: header.title_name,
                     has_thumbnail: header.thumbnail_size > 0,
                     is_folder: false,
+                    album_name,
+                    author,
                 })
             }
         })
@@ -200,7 +219,7 @@ pub fn get_song_details(path: String) -> Result<SongDetails, String> {
     }
 
     // CON/STFS file
-    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let data = read_file(&path).map_err(|e| format!("Failed to read file: {}", e))?;
     let header = parse_header(&data)?;
 
     // Encode thumbnail as base64
@@ -302,7 +321,7 @@ pub fn save_song(
     }
 
     // CON/STFS file
-    let mut data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let mut data = read_file(&path).map_err(|e| format!("Failed to read file: {}", e))?;
 
     // Update header fields
     if let Some(name) = &display_name {
@@ -385,7 +404,7 @@ pub fn get_thumbnail(path: String) -> Result<String, String> {
         return Ok(read_folder_thumbnail(p));
     }
 
-    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let data = read_file(&path).map_err(|e| format!("Failed to read file: {}", e))?;
     let header = parse_header(&data)?;
 
     if header.thumbnail_size == 0 {
@@ -413,7 +432,7 @@ pub fn get_album_art(path: String) -> Result<String, String> {
         return Ok(read_folder_thumbnail(p));
     }
 
-    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let data = read_file(&path).map_err(|e| format!("Failed to read file: {}", e))?;
     let stfs = StfsFilesystem::parse(data)?;
 
     let xbox_tex = stfs.extract_album_art()?;
@@ -819,7 +838,7 @@ pub async fn find_duplicates(
                     meta.rank_keys.map_or(false, |r| r > 0),
                 ));
             }
-        } else if let Ok(data) = fs::read(path) {
+        } else if let Ok(data) = read_file(path) {
             if let Ok(stfs) = StfsFilesystem::parse(data) {
                 if let Ok((dta_content, _)) = stfs.extract_songs_dta() {
                     let raw_dta = match String::from_utf8(dta_content.clone()) {
@@ -973,7 +992,12 @@ pub async fn batch_decrypt_moggs(
             },
         );
 
-        match decrypt_mogg_in_con(path) {
+        let result = if Path::new(path).is_dir() {
+            decrypt_mogg_in_folder(path)
+        } else {
+            decrypt_mogg_in_con(path)
+        };
+        match result {
             Ok(DecryptStatus::Decrypted) => {
                 decrypted += 1;
                 let _ = app.emit(
@@ -1067,6 +1091,11 @@ fn to_win_long_path(path: &str) -> String {
     }
 }
 
+/// Read a file using extended-length path on Windows (handles USB/long paths).
+fn read_file(path: &str) -> std::io::Result<Vec<u8>> {
+    fs::read(to_win_long_path(path))
+}
+
 fn sanitize_filename(s: &str) -> String {
     s.chars()
         .filter(|c| !r#"<>:"/\|?*"#.contains(*c))
@@ -1140,7 +1169,7 @@ fn extract_artist_album(path: &str) -> Option<(String, String, String)> {
         let content = fs::read_to_string(p.join("song.ini")).ok()?;
         song_ini::parse_song_ini(&content)
     } else {
-        let data = fs::read(path).ok()?;
+        let data = read_file(path).ok()?;
         let stfs = StfsFilesystem::parse(data).ok()?;
         let (dta_content, _) = stfs.extract_songs_dta().ok()?;
         let raw_dta = match String::from_utf8(dta_content.clone()) {
@@ -1172,7 +1201,7 @@ fn extract_artist_name(path: &str) -> Option<(String, String)> {
         let content = fs::read_to_string(p.join("song.ini")).ok()?;
         song_ini::parse_song_ini(&content)
     } else {
-        let data = fs::read(path).ok()?;
+        let data = read_file(path).ok()?;
         let stfs = StfsFilesystem::parse(data).ok()?;
         let (dta_content, _) = stfs.extract_songs_dta().ok()?;
         let raw_dta = match String::from_utf8(dta_content.clone()) {
@@ -1292,7 +1321,7 @@ pub async fn batch_get_field(
             fs::read_to_string(p.join("song.ini"))
                 .ok()
                 .map(|content| song_ini::parse_song_ini(&content))
-        } else if let Ok(data) = fs::read(path) {
+        } else if let Ok(data) = read_file(path) {
             StfsFilesystem::parse(data).ok().and_then(|stfs| {
                 let (dta_content, _) = stfs.extract_songs_dta().ok()?;
                 let raw_dta = match String::from_utf8(dta_content.clone()) {
@@ -1342,8 +1371,54 @@ pub async fn batch_get_field(
     Ok(results)
 }
 
+fn decrypt_mogg_in_folder(dir: &str) -> Result<DecryptStatus, String> {
+    let dir_path = Path::new(dir);
+    let mogg_path = fs::read_dir(dir_path)
+        .map_err(|e| format!("Failed to read directory: {}", e))?
+        .filter_map(|e| e.ok())
+        .find(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext.to_ascii_lowercase() == "mogg")
+                .unwrap_or(false)
+        })
+        .map(|e| e.path());
+
+    let mogg_path = match mogg_path {
+        Some(p) => p,
+        None => return Ok(DecryptStatus::NoMogg),
+    };
+
+    let mogg_str = mogg_path.to_string_lossy();
+    let mut mogg_buf = read_file(&mogg_str).map_err(|e| format!("Failed to read .mogg: {}", e))?;
+
+    if mogg_buf.len() < 4 {
+        return Err("MOGG file too small".into());
+    }
+
+    let version = u32::from_le_bytes([mogg_buf[0], mogg_buf[1], mogg_buf[2], mogg_buf[3]]);
+
+    if version == 0x0A {
+        return Ok(DecryptStatus::AlreadyDecrypted);
+    }
+    if version < 0x0B || version > 0x11 {
+        return Err(format!("Unsupported MOGG version: 0x{:02X}", version));
+    }
+
+    let mogg_len = mogg_buf.len();
+    let success = unsafe { themethod3::capi::decrypt_mogg(mogg_buf.as_mut_ptr(), mogg_len) };
+    if !success {
+        return Err("themethod3 decryption failed".into());
+    }
+
+    let long_path = to_win_long_path(&mogg_str);
+    fs::write(&long_path, &mogg_buf).map_err(|e| format!("Failed to write decrypted .mogg: {}", e))?;
+
+    Ok(DecryptStatus::Decrypted)
+}
+
 fn decrypt_mogg_in_con(path: &str) -> Result<DecryptStatus, String> {
-    let mut data = fs::read(path).map_err(|e| format!("Failed to read: {}", e))?;
+    let mut data = read_file(path).map_err(|e| format!("Failed to read: {}", e))?;
     let stfs = StfsFilesystem::parse(data.clone())?;
 
     let mogg_entry = match stfs.find_mogg_file() {
@@ -1423,6 +1498,7 @@ struct OrganizePreviewProgress {
 pub async fn preview_organize(
     app: AppHandle,
     paths: Vec<String>,
+    base_folder: String,
 ) -> Result<Vec<OrganizePreview>, String> {
     let total = paths.len();
     let mut previews = Vec::new();
@@ -1439,9 +1515,8 @@ pub async fn preview_organize(
                 let safe_album = sanitize_filename(&album);
                 let target_folder = format!("{}/{}", safe_artist, safe_album);
 
-                // Compute the base folder: walk up from file to find the opened folder
-                // We use the parent directory of the file as the base
-                let base = p.parent().unwrap_or(Path::new("."));
+                // Use the user's opened folder as the base, not the file's parent
+                let base = Path::new(&base_folder);
                 let target_dir = base.join(&safe_artist).join(&safe_album);
                 let target_path = target_dir.join(&filename);
                 let target_path_str = target_path.to_string_lossy().to_string();
@@ -1507,8 +1582,9 @@ pub struct OrganizeRequest {
 }
 
 #[tauri::command]
-pub fn execute_organize(requests: Vec<OrganizeRequest>) -> Result<Vec<RenameResult>, String> {
+pub fn execute_organize(requests: Vec<OrganizeRequest>, base_folder: String) -> Result<Vec<RenameResult>, String> {
     let mut results = Vec::new();
+    let base = PathBuf::from(&base_folder);
 
     for req in requests {
         let target = PathBuf::from(&req.new_path);
@@ -1579,6 +1655,35 @@ pub fn execute_organize(requests: Vec<OrganizeRequest>) -> Result<Vec<RenameResu
         }
     }
 
+    // Clean up empty directories left behind after moves.
+    // Walk up from each source file's parent, removing empty dirs, but never above base_folder.
+    let canonical_base = base.canonicalize().unwrap_or_else(|_| base.clone());
+    let mut cleaned: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    for res in &results {
+        if !res.success {
+            continue;
+        }
+        let mut dir = PathBuf::from(&res.old_path);
+        dir.pop(); // start at parent of the moved file
+        loop {
+            let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+            if canonical_dir <= canonical_base || cleaned.contains(&canonical_dir) {
+                break;
+            }
+            // Only remove if truly empty
+            let is_empty = fs::read_dir(&dir)
+                .map(|mut rd| rd.next().is_none())
+                .unwrap_or(false);
+            if is_empty {
+                let _ = fs::remove_dir(&dir);
+                cleaned.insert(canonical_dir);
+                dir.pop();
+            } else {
+                break;
+            }
+        }
+    }
+
     Ok(results)
 }
 
@@ -1642,7 +1747,7 @@ pub fn batch_validate(paths: Vec<String>, app: AppHandle) -> Result<BatchValidat
                 Err(_) => None,
             }
         } else {
-            match fs::read(path_str) {
+            match read_file(path_str) {
                 Ok(data) => {
                     match parse_header(&data) {
                         Ok(header) => {
@@ -1734,13 +1839,13 @@ pub fn get_chart_overview(path: String) -> Result<ChartOverview, String> {
     if p.is_dir() {
         // Unpacked song folder — look for .mid directly
         let mid_path = find_mid_in_dir(p)?;
-        let midi_bytes = fs::read(&mid_path)
+        let midi_bytes = read_file(&mid_path.to_string_lossy())
             .map_err(|e| format!("Failed to read .mid file: {}", e))?;
         return midi_parser::parse_chart_overview(&midi_bytes);
     }
 
     // CON/STFS file
-    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let data = read_file(&path).map_err(|e| format!("Failed to read file: {}", e))?;
     let stfs = StfsFilesystem::parse(data)?;
     let mid_entry = stfs
         .find_mid_file()
@@ -1760,12 +1865,12 @@ pub fn get_chart_notes(
 
     if p.is_dir() {
         let mid_path = find_mid_in_dir(p)?;
-        let midi_bytes = fs::read(&mid_path)
+        let midi_bytes = read_file(&mid_path.to_string_lossy())
             .map_err(|e| format!("Failed to read .mid file: {}", e))?;
         return midi_parser::parse_instrument_notes(&midi_bytes, &instrument, &difficulty);
     }
 
-    let data = fs::read(&path).map_err(|e| format!("Failed to read file: {}", e))?;
+    let data = read_file(&path).map_err(|e| format!("Failed to read file: {}", e))?;
     let stfs = StfsFilesystem::parse(data)?;
     let mid_entry = stfs
         .find_mid_file()

@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicjhan/nicjhan.github.io/main/tauri-conf-schema.json",
   "productName": "YARGLE",
-  "version": "0.52.0",
+  "version": "0.53.0",
   "identifier": "com.yargle.app",
   "build": {
     "beforeDevCommand": "npm run dev",

@@ -69,6 +69,7 @@ export function OrganizeModal({
     try {
       const result = await invoke<OrganizePreview[]>("preview_organize", {
         paths,
+        baseFolder: currentFolder,
       });
       setPreviews(result);
       const moveable = new Set(
@@ -103,6 +104,7 @@ export function OrganizeModal({
         }));
       const results = await invoke<RenameResult[]>("execute_organize", {
         requests,
+        baseFolder: currentFolder,
       });
       setOrganizeResults(results);
       const anySuccess = results.some((r) => r.success);

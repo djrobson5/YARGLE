@@ -17,7 +17,9 @@ export function FileList({ songs, selectedPath, filter, onSelect, modifiedPaths 
     return songs.filter(
       (s) =>
         s.display_name.toLowerCase().includes(lower) ||
-        s.description.toLowerCase().includes(lower)
+        s.description.toLowerCase().includes(lower) ||
+        s.album_name.toLowerCase().includes(lower) ||
+        s.author.toLowerCase().includes(lower)
     );
   }, [songs, filter]);
 

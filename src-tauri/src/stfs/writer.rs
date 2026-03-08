@@ -169,7 +169,13 @@ pub fn write_file_content_inplace(
 
 /// Save modified data back to file
 pub fn save_to_file(path: &str, data: &[u8]) -> Result<(), String> {
-    fs::write(path, data).map_err(|e| format!("Failed to write file: {}", e))
+    let long_path = if cfg!(windows) && !path.starts_with("\\\\?\\") {
+        let normalized = path.replace('/', "\\");
+        format!("\\\\?\\{}", normalized)
+    } else {
+        path.to_string()
+    };
+    fs::write(&long_path, data).map_err(|e| format!("Failed to write file: {}", e))
 }
 
 /// Resize an image to fit within the 16KB header thumbnail budget.

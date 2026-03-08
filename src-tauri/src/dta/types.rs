@@ -53,6 +53,10 @@ pub struct SongSummary {
     pub has_thumbnail: bool,
     #[serde(default)]
     pub is_folder: bool,
+    #[serde(default)]
+    pub album_name: String,
+    #[serde(default)]
+    pub author: String,
 }
 
 /// Full details for the metadata editor
