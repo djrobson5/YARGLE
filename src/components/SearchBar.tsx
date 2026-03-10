@@ -1,4 +1,21 @@
-import React from "react";
+import React, { useMemo } from "react";
+import type { SongSummary } from "../types";
+import sourcesData from "../data/sources.json";
+
+interface SourceEntry {
+  ids: string[];
+  names: { "en-US": string };
+  icon: string;
+  type: string;
+}
+
+const sourceLookup = new Map<string, { icon: string; name: string; primaryId: string }>();
+for (const s of (sourcesData.sources as SourceEntry[])) {
+  const info = { icon: s.icon, name: s.names["en-US"], primaryId: s.ids[0] };
+  for (const id of s.ids) {
+    sourceLookup.set(id, info);
+  }
+}
 
 interface SearchBarProps {
   value: string;
@@ -12,10 +29,37 @@ interface SearchBarProps {
   onOrganize?: () => void;
   onValidate?: () => void;
   songCount: number;
+  songs: SongSummary[];
+  gameOriginFilter: string | null;
+  onGameOriginFilter: (origin: string | null) => void;
 }
 
-export function SearchBar({ value, onChange, onOpenFolder, onOpenOptions, onDecryptMoggs, onFindDuplicates, onBatchRename, onBatchEdit, onOrganize, onValidate, songCount }: SearchBarProps) {
+export function SearchBar({ value, onChange, onOpenFolder, onOpenOptions, onDecryptMoggs, onFindDuplicates, onBatchRename, onBatchEdit, onOrganize, onValidate, songCount, songs, gameOriginFilter, onGameOriginFilter }: SearchBarProps) {
   const hasTools = songCount > 0;
+
+  // Build list of unique game origins present in the loaded songs, sorted by count descending
+  const originButtons = useMemo(() => {
+    if (songs.length === 0) return [];
+    const counts = new Map<string, number>();
+    for (const s of songs) {
+      const origin = s.game_origin || "";
+      const normalized = (!origin || origin === "ugc_plus") ? "c3customs" : origin;
+      counts.set(normalized, (counts.get(normalized) || 0) + 1);
+    }
+    // Convert to array with icon info, sorted by count descending
+    const entries: { id: string; icon: string; name: string; count: number }[] = [];
+    for (const [id, count] of counts) {
+      const info = sourceLookup.get(id);
+      entries.push({
+        id,
+        icon: info ? info.icon : "custom",
+        name: info ? info.name : id,
+        count,
+      });
+    }
+    entries.sort((a, b) => b.count - a.count);
+    return entries;
+  }, [songs]);
 
   return (
     <div className="search-bar-wrap">
@@ -104,6 +148,28 @@ export function SearchBar({ value, onChange, onOpenFolder, onOpenOptions, onDecr
               Options
             </button>
           )}
+        </div>
+      )}
+      {originButtons.length > 1 && (
+        <div className="origin-filter-bar">
+          <button
+            className={`origin-filter-btn ${gameOriginFilter === null ? "active" : ""}`}
+            onClick={() => onGameOriginFilter(null)}
+            title="Show all songs"
+          >
+            All
+          </button>
+          {originButtons.map((o) => (
+            <button
+              key={o.id}
+              className={`origin-filter-btn ${gameOriginFilter === o.id ? "active" : ""}`}
+              onClick={() => onGameOriginFilter(gameOriginFilter === o.id ? null : o.id)}
+              title={`${o.name} (${o.count})`}
+            >
+              <img src={`/icons/${o.icon}.png`} alt={o.name} />
+              <span className="origin-filter-count">{o.count}</span>
+            </button>
+          ))}
         </div>
       )}
     </div>

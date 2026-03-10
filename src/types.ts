@@ -7,6 +7,7 @@ export interface SongSummary {
   is_folder: boolean;
   album_name: string;
   author: string;
+  game_origin: string;
 }
 
 export interface SongMetadata {

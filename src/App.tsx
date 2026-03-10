@@ -33,6 +33,7 @@ function App() {
   } = useSongFiles();
 
   const [filter, setFilter] = useState("");
+  const [gameOriginFilter, setGameOriginFilter] = useState<string | null>(null);
   const [showScoreSync, setShowScoreSync] = useState(false);
   const [showMoggDecrypt, setShowMoggDecrypt] = useState(false);
   const [showDuplicates, setShowDuplicates] = useState(false);
@@ -81,11 +82,15 @@ function App() {
           onOrganize={() => setShowOrganize(true)}
           onValidate={() => setShowValidator(true)}
           songCount={songs.length}
+          songs={songs}
+          gameOriginFilter={gameOriginFilter}
+          onGameOriginFilter={setGameOriginFilter}
         />
         <FileList
           songs={songs}
           selectedPath={selectedPath}
           filter={filter}
+          gameOriginFilter={gameOriginFilter}
           onSelect={selectSong}
           modifiedPaths={new Set(
             modifiedFields.size > 0 && details ? [details.path] : []

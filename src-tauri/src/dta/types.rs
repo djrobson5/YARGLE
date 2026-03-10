@@ -57,6 +57,8 @@ pub struct SongSummary {
     pub album_name: String,
     #[serde(default)]
     pub author: String,
+    #[serde(default)]
+    pub game_origin: String,
 }
 
 /// Full details for the metadata editor

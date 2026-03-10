@@ -130,6 +130,7 @@ pub fn open_folder(path: String) -> Result<Vec<SongSummary>, String> {
                 } else {
                     file_path.file_name()?.to_string_lossy().to_string()
                 };
+                let game_origin = meta.game_origin.clone();
                 Some(SongSummary {
                     path: file_path.to_string_lossy().to_string(),
                     display_name,
@@ -139,13 +140,14 @@ pub fn open_folder(path: String) -> Result<Vec<SongSummary>, String> {
                     is_folder: true,
                     album_name: meta.album_name,
                     author: meta.author,
+                    game_origin,
                 })
             } else {
                 // CON/STFS file
                 let data = read_header_bytes(file_path).ok()?;
                 let header = parse_header_summary(&data).ok()?;
-                // Try to extract album_name and author from DTA metadata
-                let (album_name, author) = fs::read(file_path).ok()
+                // Try to extract album_name, author, and game_origin from DTA metadata
+                let (album_name, author, game_origin) = fs::read(file_path).ok()
                     .and_then(|full_data| {
                         let stfs_fs = StfsFilesystem::parse(full_data).ok()?;
                         let (dta_content, _) = stfs_fs.extract_songs_dta().ok()?;
@@ -156,7 +158,7 @@ pub fn open_folder(path: String) -> Result<Vec<SongSummary>, String> {
                             });
                         let nodes = parse_dta(&raw_dta).ok()?;
                         let meta = extract_metadata(&nodes, &raw_dta);
-                        Some((meta.album_name, meta.author))
+                        Some((meta.album_name, meta.author, meta.game_origin))
                     })
                     .unwrap_or_default();
                 Some(SongSummary {
@@ -168,6 +170,7 @@ pub fn open_folder(path: String) -> Result<Vec<SongSummary>, String> {
                     is_folder: false,
                     album_name,
                     author,
+                    game_origin,
                 })
             }
         })
