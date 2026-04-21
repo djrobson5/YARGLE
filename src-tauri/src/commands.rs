@@ -13,7 +13,7 @@ use crate::dta::validator::validate_metadata;
 use crate::midi::parser as midi_parser;
 use crate::midi::types::{ChartOverview, InstrumentNotes};
 use crate::song_ini;
-use crate::stfs::filesystem::StfsFilesystem;
+use crate::stfs::filesystem::{self, StfsFilesystem};
 use crate::stfs::header::{parse_header, parse_header_summary};
 use crate::stfs::texture;
 use crate::stfs::writer;
@@ -95,8 +95,77 @@ fn collect_song_entries(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Parse a single song entry (CON file or song folder) into a SongSummary.
+fn parse_song_entry(file_path: &Path) -> Option<SongSummary> {
+    if file_path.is_dir() {
+        // Unpacked song folder
+        let ini_path = file_path.join("song.ini");
+        let content = fs::read_to_string(&ini_path).ok()?;
+        let meta = song_ini::parse_song_ini(&content);
+        let loading_phrase = song_ini::extract_loading_phrase(&content);
+        let display_name = if !meta.name.is_empty() && !meta.artist.is_empty() {
+            format!("{} - {}", meta.artist, meta.name)
+        } else if !meta.name.is_empty() {
+            meta.name.clone()
+        } else {
+            file_path.file_name()?.to_string_lossy().to_string()
+        };
+        let description = if !loading_phrase.is_empty() {
+            loading_phrase
+        } else {
+            file_path.file_name()?.to_string_lossy().to_string()
+        };
+        let game_origin = meta.game_origin.clone();
+        Some(SongSummary {
+            path: file_path.to_string_lossy().to_string(),
+            display_name,
+            description,
+            title_name: meta.name,
+            has_thumbnail: find_folder_album_art(file_path).is_some(),
+            is_folder: true,
+            album_name: meta.album_name,
+            author: meta.author,
+            game_origin,
+        })
+    } else {
+        // CON/STFS file — seek-based extraction (reads ~20-50KB, not the full file)
+        let data = read_header_bytes(file_path).ok()?;
+        let header = parse_header_summary(&data).ok()?;
+        // Extract DTA metadata using seek-based I/O
+        let (album_name, author, game_origin) =
+            filesystem::extract_dta_from_file(file_path)
+                .ok()
+                .and_then(|dta_content| {
+                    let raw_dta = match String::from_utf8(dta_content) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let bytes = e.into_bytes();
+                            let (decoded, _, _) =
+                                encoding_rs::WINDOWS_1252.decode(&bytes);
+                            decoded.to_string()
+                        }
+                    };
+                    let nodes = parse_dta(&raw_dta).ok()?;
+                    let meta = extract_metadata(&nodes, &raw_dta);
+                    Some((meta.album_name, meta.author, meta.game_origin))
+                })
+                .unwrap_or_default();
+        Some(SongSummary {
+            path: file_path.to_string_lossy().to_string(),
+            display_name: header.display_name,
+            description: header.description,
+            title_name: header.title_name,
+            has_thumbnail: header.thumbnail_size > 0,
+            is_folder: false,
+            album_name,
+            author,
+            game_origin,
+        })
+    }
+}
+
 #[tauri::command]
-pub fn open_folder(path: String) -> Result<Vec<SongSummary>, String> {
+pub async fn open_folder(app: AppHandle, path: String) -> Result<Vec<SongSummary>, String> {
     use rayon::prelude::*;
 
     let dir = Path::new(&path);
@@ -108,77 +177,47 @@ pub fn open_folder(path: String) -> Result<Vec<SongSummary>, String> {
     let mut paths: Vec<PathBuf> = Vec::new();
     collect_song_entries(dir, &mut paths);
 
-    // Parse headers in parallel
-    let mut songs: Vec<SongSummary> = paths
-        .par_iter()
-        .filter_map(|file_path| {
-            if file_path.is_dir() {
-                // Unpacked song folder
-                let ini_path = file_path.join("song.ini");
-                let content = fs::read_to_string(&ini_path).ok()?;
-                let meta = song_ini::parse_song_ini(&content);
-                let loading_phrase = song_ini::extract_loading_phrase(&content);
-                let display_name = if !meta.name.is_empty() && !meta.artist.is_empty() {
-                    format!("{} - {}", meta.artist, meta.name)
-                } else if !meta.name.is_empty() {
-                    meta.name.clone()
-                } else {
-                    file_path.file_name()?.to_string_lossy().to_string()
-                };
-                let description = if !loading_phrase.is_empty() {
-                    loading_phrase
-                } else {
-                    file_path.file_name()?.to_string_lossy().to_string()
-                };
-                let game_origin = meta.game_origin.clone();
-                Some(SongSummary {
-                    path: file_path.to_string_lossy().to_string(),
-                    display_name,
-                    description,
-                    title_name: meta.name,
-                    has_thumbnail: find_folder_album_art(file_path).is_some(),
-                    is_folder: true,
-                    album_name: meta.album_name,
-                    author: meta.author,
-                    game_origin,
-                })
-            } else {
-                // CON/STFS file
-                let data = read_header_bytes(file_path).ok()?;
-                let header = parse_header_summary(&data).ok()?;
-                // Try to extract album_name, author, and game_origin from DTA metadata
-                let (album_name, author, game_origin) = fs::read(file_path).ok()
-                    .and_then(|full_data| {
-                        let stfs_fs = StfsFilesystem::parse(full_data).ok()?;
-                        let (dta_content, _) = stfs_fs.extract_songs_dta().ok()?;
-                        let raw_dta = String::from_utf8(dta_content.clone())
-                            .unwrap_or_else(|_| {
-                                let (decoded, _, _) = encoding_rs::WINDOWS_1252.decode(&dta_content);
-                                decoded.to_string()
-                            });
-                        let nodes = parse_dta(&raw_dta).ok()?;
-                        let meta = extract_metadata(&nodes, &raw_dta);
-                        Some((meta.album_name, meta.author, meta.game_origin))
-                    })
-                    .unwrap_or_default();
-                Some(SongSummary {
-                    path: file_path.to_string_lossy().to_string(),
-                    display_name: header.display_name,
-                    description: header.description,
-                    title_name: header.title_name,
-                    has_thumbnail: header.thumbnail_size > 0,
-                    is_folder: false,
-                    album_name,
-                    author,
-                    game_origin,
-                })
-            }
-        })
-        .collect();
+    let total = paths.len();
+    let _ = app.emit("open-folder-progress", serde_json::json!({
+        "current": 0, "total": total, "phase": "scanning"
+    }));
 
-    songs.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
+    // Process in chunks to allow progress updates and avoid blocking
+    let chunk_size = 200;
+    let mut all_songs: Vec<SongSummary> = Vec::with_capacity(total);
 
-    Ok(songs)
+    // Use a limited thread pool to avoid disk I/O contention with large libraries
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    for (chunk_idx, chunk) in paths.chunks(chunk_size).enumerate() {
+        let chunk_songs: Vec<SongSummary> = pool.install(|| {
+            chunk
+                .par_iter()
+                .filter_map(|file_path| parse_song_entry(file_path))
+                .collect()
+        });
+
+        all_songs.extend(chunk_songs);
+
+        let processed = ((chunk_idx + 1) * chunk_size).min(total);
+        let _ = app.emit("open-folder-progress", serde_json::json!({
+            "current": processed, "total": total, "phase": "loading"
+        }));
+
+        // Yield to the event loop so the UI stays responsive
+        tokio::task::yield_now().await;
+    }
+
+    all_songs.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
+
+    let _ = app.emit("open-folder-progress", serde_json::json!({
+        "current": total, "total": total, "phase": "done"
+    }));
+
+    Ok(all_songs)
 }
 
 #[tauri::command]
@@ -1100,12 +1139,17 @@ fn read_file(path: &str) -> std::io::Result<Vec<u8>> {
 }
 
 fn sanitize_filename(s: &str) -> String {
+    // Windows forbids trailing dots and spaces in path components. Win32 normally
+    // strips them, but \\?\ extended-length paths preserve them verbatim — which
+    // leaves folders Explorer and most APIs can't open.
     s.chars()
         .filter(|c| !r#"<>:"/\|?*"#.contains(*c))
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+        .trim_end_matches(|c: char| c == '.' || c == ' ')
+        .to_string()
 }
 
 #[tauri::command]

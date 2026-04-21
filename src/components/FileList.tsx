@@ -29,9 +29,11 @@ interface FileListProps {
   gameOriginFilter: string | null;
   onSelect: (path: string) => void;
   modifiedPaths: Set<string>;
+  multiSelected: Set<string>;
+  onToggleMultiSelect: (path: string) => void;
 }
 
-export function FileList({ songs, selectedPath, filter, gameOriginFilter, onSelect, modifiedPaths }: FileListProps) {
+export function FileList({ songs, selectedPath, filter, gameOriginFilter, onSelect, modifiedPaths, multiSelected, onToggleMultiSelect }: FileListProps) {
   const filtered = useMemo(() => {
     let result = songs;
 
@@ -71,14 +73,22 @@ export function FileList({ songs, selectedPath, filter, gameOriginFilter, onSele
     const song = filtered[index];
     const isSelected = song.path === selectedPath;
     const isModified = modifiedPaths.has(song.path);
+    const isMultiSelected = multiSelected.has(song.path);
     const originInfo = getOriginIcon(song.game_origin);
 
     return (
       <div
         style={style}
-        className={`file-list-item ${isSelected ? "selected" : ""} ${isModified ? "modified" : ""}`}
+        className={`file-list-item ${isSelected ? "selected" : ""} ${isModified ? "modified" : ""} ${isMultiSelected ? "multi-selected" : ""}`}
         onClick={() => onSelect(song.path)}
       >
+        <input
+          type="checkbox"
+          className="file-list-checkbox"
+          checked={isMultiSelected}
+          onClick={(e) => e.stopPropagation()}
+          onChange={() => onToggleMultiSelect(song.path)}
+        />
         {originInfo && (
           <img
             className="file-list-origin-icon"

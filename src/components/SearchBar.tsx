@@ -32,9 +32,13 @@ interface SearchBarProps {
   songs: SongSummary[];
   gameOriginFilter: string | null;
   onGameOriginFilter: (origin: string | null) => void;
+  multiSelectedCount: number;
+  onClearMultiSelect: () => void;
+  onSelectAllVisible: () => void;
+  filteredCount: number;
 }
 
-export function SearchBar({ value, onChange, onOpenFolder, onOpenOptions, onDecryptMoggs, onFindDuplicates, onBatchRename, onBatchEdit, onOrganize, onValidate, songCount, songs, gameOriginFilter, onGameOriginFilter }: SearchBarProps) {
+export function SearchBar({ value, onChange, onOpenFolder, onOpenOptions, onDecryptMoggs, onFindDuplicates, onBatchRename, onBatchEdit, onOrganize, onValidate, songCount, songs, gameOriginFilter, onGameOriginFilter, multiSelectedCount, onClearMultiSelect, onSelectAllVisible, filteredCount }: SearchBarProps) {
   const hasTools = songCount > 0;
 
   // Build list of unique game origins present in the loaded songs, sorted by count descending
@@ -76,6 +80,25 @@ export function SearchBar({ value, onChange, onOpenFolder, onOpenOptions, onDecr
         />
         {songCount > 0 && <span className="song-count">{songCount} songs</span>}
       </div>
+      {hasTools && (
+        <div className="multi-select-bar">
+          {multiSelectedCount > 0 ? (
+            <span>{multiSelectedCount} song{multiSelectedCount !== 1 ? "s" : ""} selected</span>
+          ) : (
+            <span className="multi-select-hint">Use checkboxes to select songs</span>
+          )}
+          <div className="multi-select-actions">
+            {multiSelectedCount < filteredCount && (
+              <button className="select-all-btn" onClick={onSelectAllVisible}>
+                Select All{filteredCount < songCount ? ` (${filteredCount})` : ""}
+              </button>
+            )}
+            {multiSelectedCount > 0 && (
+              <button className="clear-selection-btn" onClick={onClearMultiSelect}>Clear</button>
+            )}
+          </div>
+        </div>
+      )}
       {hasTools && (
         <div className="toolbar-row">
           {onBatchRename && (

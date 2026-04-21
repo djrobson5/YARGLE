@@ -1,5 +1,5 @@
 use byteorder::{BigEndian, ReadBytesExt};
-use std::io::{Cursor, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 
 const VOLUME_DESCRIPTOR_OFFSET: u64 = 0x0379;
 const BLOCK_SIZE: usize = 0x1000; // 4096 bytes
@@ -171,6 +171,175 @@ impl StfsFilesystem {
     /// Consume self and return the owned data buffer
     pub fn into_data(self) -> Vec<u8> {
         self.data
+    }
+}
+
+/// Extract songs.dta content from a CON file using seek-based I/O.
+/// Only reads the volume descriptor, file table blocks, hash table entries,
+/// and the DTA data blocks — typically ~20-50KB instead of the full file.
+pub fn extract_dta_from_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+
+    // 1. Read volume descriptor (~0x400 bytes from start)
+    let vd_end = VOLUME_DESCRIPTOR_OFFSET as usize + 0x25;
+    let mut vd_buf = vec![0u8; vd_end];
+    file.read_exact(&mut vd_buf).map_err(|e| e.to_string())?;
+    let vd = parse_volume_descriptor(&vd_buf)?;
+
+    // 2. Read file table blocks (seek to each block, read 4KB)
+    let file_entries = parse_file_table_seekable(&mut file, &vd)?;
+
+    // 3. Find songs.dta entry
+    let songs_dir_idx = file_entries
+        .iter()
+        .position(|f| f.is_directory && f.name.eq_ignore_ascii_case("songs"))
+        .ok_or("No 'songs' directory found")?;
+
+    let dta_entry = file_entries
+        .iter()
+        .find(|f| {
+            !f.is_directory
+                && f.name.eq_ignore_ascii_case("songs.dta")
+                && f.path_indicator == songs_dir_idx as u16
+        })
+        .ok_or("No 'songs.dta' found")?;
+
+    // 4. Extract DTA content by seeking to each data block
+    extract_file_seekable(&mut file, dta_entry, &vd)
+}
+
+/// Parse file table by seeking to block offsets instead of requiring full file in memory.
+fn parse_file_table_seekable(
+    file: &mut std::fs::File,
+    vd: &VolumeDescriptor,
+) -> Result<Vec<FileEntry>, String> {
+    let mut entries = Vec::new();
+    let mut current_block = vd.file_table_block;
+    let mut block_buf = vec![0u8; BLOCK_SIZE];
+
+    for _ in 0..vd.file_table_block_count {
+        let offset = block_to_offset(current_block, vd);
+        file.seek(SeekFrom::Start(offset as u64))
+            .map_err(|e| e.to_string())?;
+        file.read_exact(&mut block_buf)
+            .map_err(|e| e.to_string())?;
+
+        for i in 0..64 {
+            let entry_offset = i * 0x40;
+            let entry_data = &block_buf[entry_offset..entry_offset + 0x40];
+
+            let name_len = entry_data[0x28] & 0x3F;
+            if name_len == 0 {
+                continue;
+            }
+
+            let is_directory = (entry_data[0x28] & 0x80) != 0;
+            let name_bytes = &entry_data[0..name_len as usize];
+            let name = String::from_utf8_lossy(name_bytes).to_string();
+
+            let num_blocks = (entry_data[0x29] as u32)
+                | ((entry_data[0x2A] as u32) << 8)
+                | ((entry_data[0x2B] as u32) << 16);
+
+            let starting_block = (entry_data[0x2F] as u32)
+                | ((entry_data[0x30] as u32) << 8)
+                | ((entry_data[0x31] as u32) << 16);
+
+            let path_indicator = u16::from_be_bytes([entry_data[0x32], entry_data[0x33]]);
+
+            let file_size = u32::from_be_bytes([
+                entry_data[0x34],
+                entry_data[0x35],
+                entry_data[0x36],
+                entry_data[0x37],
+            ]);
+
+            entries.push(FileEntry {
+                name,
+                is_directory,
+                num_blocks,
+                starting_block,
+                path_indicator,
+                file_size,
+                update_time: 0,
+                access_time: 0,
+            });
+        }
+
+        // Read next-block pointer from hash table
+        current_block = match get_next_block_seekable(file, current_block, vd) {
+            Ok(next) if next != 0xFFFFFF => next,
+            _ => break,
+        };
+    }
+
+    Ok(entries)
+}
+
+/// Extract file content by seeking to each data block.
+fn extract_file_seekable(
+    file: &mut std::fs::File,
+    entry: &FileEntry,
+    vd: &VolumeDescriptor,
+) -> Result<Vec<u8>, String> {
+    let mut result = Vec::with_capacity(entry.file_size as usize);
+    let mut current_block = entry.starting_block;
+    let mut remaining = entry.file_size as usize;
+    let mut block_buf = vec![0u8; BLOCK_SIZE];
+
+    for _ in 0..entry.num_blocks {
+        if remaining == 0 {
+            break;
+        }
+
+        let offset = block_to_offset(current_block, vd);
+        let read_size = remaining.min(BLOCK_SIZE);
+
+        file.seek(SeekFrom::Start(offset as u64))
+            .map_err(|e| e.to_string())?;
+        file.read_exact(&mut block_buf[..read_size])
+            .map_err(|e| e.to_string())?;
+
+        result.extend_from_slice(&block_buf[..read_size]);
+        remaining -= read_size;
+
+        if remaining > 0 {
+            current_block = get_next_block_seekable(file, current_block, vd)?;
+            if current_block == 0xFFFFFF {
+                break;
+            }
+        }
+    }
+
+    result.truncate(entry.file_size as usize);
+    Ok(result)
+}
+
+/// Get the next block pointer by seeking to the hash table entry.
+fn get_next_block_seekable(
+    file: &mut std::fs::File,
+    block: u32,
+    vd: &VolumeDescriptor,
+) -> Result<u32, String> {
+    let hash_table_index = (block % 170) as usize;
+    let hash_table_start = hash_table_offset_for_block(block, vd);
+    let entry_offset = hash_table_start + hash_table_index * 0x18;
+
+    file.seek(SeekFrom::Start(entry_offset as u64))
+        .map_err(|e| e.to_string())?;
+    let mut buf = [0u8; 0x18];
+    file.read_exact(&mut buf).map_err(|e| e.to_string())?;
+
+    let status = buf[0x14];
+    let next_b0 = buf[0x15] as u32;
+    let next_b1 = buf[0x16] as u32;
+    let next_b2 = buf[0x17] as u32;
+    let next_block = (next_b0 << 16) | (next_b1 << 8) | next_b2;
+
+    if next_block == 0xFFFFFF || status == 0 {
+        Ok(0xFFFFFF)
+    } else {
+        Ok(next_block)
     }
 }
 

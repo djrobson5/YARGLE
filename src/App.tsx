@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { SearchBar } from "./components/SearchBar";
 import { FileList } from "./components/FileList";
@@ -18,12 +18,17 @@ function App() {
     selectedPath,
     details,
     loading,
+    loadProgress,
     error,
     modifiedFields,
     saving,
     albumArt,
+    multiSelected,
     openFolder,
     selectSong,
+    toggleMultiSelect,
+    clearMultiSelect,
+    selectAllPaths,
     updateMetadata,
     updateHeader,
     updateThumbnail,
@@ -55,6 +60,33 @@ function App() {
     }
   }, [openFolder, setError]);
 
+  // Compute filtered songs (mirrors FileList filtering logic)
+  const filteredSongs = useMemo(() => {
+    let result = songs;
+    if (gameOriginFilter) {
+      result = result.filter((s) => {
+        const origin = s.game_origin || "";
+        const normalized = (!origin || origin === "ugc_plus") ? "c3customs" : origin;
+        return normalized === gameOriginFilter;
+      });
+    }
+    if (filter) {
+      const lower = filter.toLowerCase();
+      result = result.filter(
+        (s) =>
+          s.display_name.toLowerCase().includes(lower) ||
+          s.description.toLowerCase().includes(lower) ||
+          s.album_name.toLowerCase().includes(lower) ||
+          s.author.toLowerCase().includes(lower)
+      );
+    }
+    return result;
+  }, [songs, filter, gameOriginFilter]);
+
+  const handleSelectAllVisible = useCallback(() => {
+    selectAllPaths(filteredSongs.map((s) => s.path));
+  }, [filteredSongs, selectAllPaths]);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -85,7 +117,24 @@ function App() {
           songs={songs}
           gameOriginFilter={gameOriginFilter}
           onGameOriginFilter={setGameOriginFilter}
+          multiSelectedCount={multiSelected.size}
+          onClearMultiSelect={clearMultiSelect}
+          onSelectAllVisible={handleSelectAllVisible}
+          filteredCount={filteredSongs.length}
         />
+        {loading && loadProgress && loadProgress.total > 0 && (
+          <div className="folder-load-progress">
+            <div className="mogg-decrypt-bar-outer">
+              <div
+                className="mogg-decrypt-bar-inner"
+                style={{ width: `${Math.round((loadProgress.current / loadProgress.total) * 100)}%` }}
+              />
+            </div>
+            <div className="folder-load-status">
+              Loading songs... {loadProgress.current.toLocaleString()} / {loadProgress.total.toLocaleString()}
+            </div>
+          </div>
+        )}
         <FileList
           songs={songs}
           selectedPath={selectedPath}
@@ -95,6 +144,8 @@ function App() {
           modifiedPaths={new Set(
             modifiedFields.size > 0 && details ? [details.path] : []
           )}
+          multiSelected={multiSelected}
+          onToggleMultiSelect={toggleMultiSelect}
         />
       </div>
       <div className="right-panel">
@@ -183,7 +234,11 @@ function App() {
       )}
       {showBatchEdit && (
         <BatchEditModal
-          paths={songs.map((s) => s.path)}
+          paths={multiSelected.size > 0
+            ? songs.filter(s => multiSelected.has(s.path)).map(s => s.path)
+            : songs.map((s) => s.path)
+          }
+          isSelection={multiSelected.size > 0}
           onClose={(edited) => {
             setShowBatchEdit(false);
             if (edited && currentFolder) {

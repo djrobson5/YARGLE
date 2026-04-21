@@ -1,34 +1,54 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type { SongSummary, SongDetails, SongMetadata } from "../types";
+
+interface LoadProgress {
+  current: number;
+  total: number;
+  phase: string;
+}
 
 export function useSongFiles() {
   const [songs, setSongs] = useState<SongSummary[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [details, setDetails] = useState<SongDetails | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadProgress, setLoadProgress] = useState<LoadProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [modifiedFields, setModifiedFields] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
   const [folderPath, setFolderPath] = useState<string>("");
   const [detailsCache, setDetailsCache] = useState<Map<string, SongDetails>>(new Map());
   const [albumArt, setAlbumArt] = useState<string>("");
+  const [multiSelected, setMultiSelected] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    const unlisten = listen<LoadProgress>("open-folder-progress", (event) => {
+      setLoadProgress(event.payload);
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
 
   const openFolder = useCallback(async (path: string) => {
     setLoading(true);
+    setLoadProgress(null);
     setError(null);
     setFolderPath(path);
     setDetailsCache(new Map());
+    setSongs([]);
     try {
       const result = await invoke<SongSummary[]>("open_folder", { path });
       setSongs(result);
       setSelectedPath(null);
       setDetails(null);
       setModifiedFields(new Set());
+      setMultiSelected(new Set());
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
+      setLoadProgress(null);
     }
   }, []);
 
@@ -60,7 +80,15 @@ export function useSongFiles() {
         setModifiedFields(prev => new Set(prev).add("game_origin"));
       }
       setDetails(result);
-      setDetailsCache(prev => new Map(prev).set(path, result));
+      setDetailsCache(prev => {
+        const next = new Map(prev).set(path, result);
+        // Cap cache at 200 entries to prevent unbounded memory growth
+        if (next.size > 200) {
+          const firstKey = next.keys().next().value;
+          if (firstKey !== undefined) next.delete(firstKey);
+        }
+        return next;
+      });
       // Fetch high-res album art in background
       invoke<string>("get_album_art", { path })
         .then(art => setAlbumArt(art))
@@ -132,6 +160,23 @@ export function useSongFiles() {
     }
   }, [details, modifiedFields]);
 
+  const toggleMultiSelect = useCallback((path: string) => {
+    setMultiSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
+  const clearMultiSelect = useCallback(() => {
+    setMultiSelected(new Set());
+  }, []);
+
+  const selectAllPaths = useCallback((paths: string[]) => {
+    setMultiSelected(new Set(paths));
+  }, []);
+
   const deleteSong = useCallback(async (path: string) => {
     const failures = await invoke<string[]>("delete_files", { paths: [path] });
     if (failures.length > 0) {
@@ -150,14 +195,19 @@ export function useSongFiles() {
     songs,
     selectedPath,
     details,
+    loadProgress,
     loading,
     error,
     modifiedFields,
     saving,
     folderPath,
     albumArt,
+    multiSelected,
     openFolder,
     selectSong,
+    toggleMultiSelect,
+    clearMultiSelect,
+    selectAllPaths,
     updateMetadata,
     updateHeader,
     updateThumbnail,

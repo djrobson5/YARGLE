@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import type { SongMetadata } from "../types";
+import sourcesData from "../data/sources.json";
 
 interface BatchEditModalProps {
   paths: string[];
+  isSelection?: boolean;
   onClose: (edited: boolean) => void;
 }
 
@@ -46,10 +48,25 @@ const RATINGS = [
   { value: "3", label: "Mature Content" },
 ];
 
-export function BatchEditModal({ paths, onClose }: BatchEditModalProps) {
+interface SourceEntry {
+  ids: string[];
+  names: { "en-US": string };
+  icon: string;
+  type: string;
+}
+
+const GAME_ORIGINS = (sourcesData.sources as SourceEntry[]).map((s) => ({
+  id: s.ids[0],
+  name: s.names["en-US"],
+  icon: s.icon,
+  type: s.type,
+}));
+
+export function BatchEditModal({ paths, isSelection, onClose }: BatchEditModalProps) {
   const [state, setState] = useState<"pick" | "scanning" | "review" | "applying" | "done">("pick");
   const [field, setField] = useState("author");
   const [newValue, setNewValue] = useState("");
+  const [originSearch, setOriginSearch] = useState("");
   const [progress, setProgress] = useState<FieldProgress | null>(null);
   const [previews, setPreviews] = useState<SongFieldPreview[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -74,6 +91,19 @@ export function BatchEditModal({ paths, onClose }: BatchEditModalProps) {
   }, []);
 
   const fieldDef = BATCH_FIELDS.find((f) => f.value === field)!;
+
+  const filteredOrigins = useMemo(() => {
+    if (!originSearch) return GAME_ORIGINS;
+    const lower = originSearch.toLowerCase();
+    return GAME_ORIGINS.filter(
+      (o) => o.name.toLowerCase().includes(lower) || o.id.toLowerCase().includes(lower)
+    );
+  }, [originSearch]);
+
+  const selectedOriginInfo = useMemo(() => {
+    if (field !== "game_origin" || !newValue) return null;
+    return GAME_ORIGINS.find((o) => o.id === newValue);
+  }, [field, newValue]);
 
   const handleScan = async () => {
     setState("scanning");
@@ -213,6 +243,40 @@ export function BatchEditModal({ paths, onClose }: BatchEditModalProps) {
         </select>
       );
     }
+    if (field === "game_origin") {
+      return (
+        <div className="origin-picker">
+          {selectedOriginInfo && (
+            <div className="origin-picker-selected">
+              <img src={`/icons/${selectedOriginInfo.icon}.png`} alt="" />
+              <span>{selectedOriginInfo.name}</span>
+              <span className="origin-picker-id">({selectedOriginInfo.id})</span>
+              <button className="origin-picker-clear" onClick={() => setNewValue("")}>&times;</button>
+            </div>
+          )}
+          <input
+            type="text"
+            className="batch-edit-input"
+            placeholder="Search game origins..."
+            value={originSearch}
+            onChange={(e) => setOriginSearch(e.target.value)}
+          />
+          <div className="origin-picker-grid">
+            {filteredOrigins.map((o) => (
+              <button
+                key={o.id}
+                className={`origin-picker-item ${newValue === o.id ? "active" : ""}`}
+                onClick={() => { setNewValue(o.id); setOriginSearch(""); }}
+                title={`${o.name} (${o.id})`}
+              >
+                <img src={`/icons/${o.icon}.png`} alt="" />
+                <span className="origin-picker-name">{o.name}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      );
+    }
     return (
       <input
         type={field === "year_released" ? "number" : "text"}
@@ -244,8 +308,11 @@ export function BatchEditModal({ paths, onClose }: BatchEditModalProps) {
           {state === "pick" && (
             <>
               <p className="mogg-decrypt-desc">
-                Edit a single metadata field across all {paths.length} loaded song
-                {paths.length !== 1 ? "s" : ""}. Pick the field and new value,
+                Edit a single metadata field across{" "}
+                {isSelection
+                  ? `${paths.length} selected song${paths.length !== 1 ? "s" : ""}`
+                  : `all ${paths.length} loaded song${paths.length !== 1 ? "s" : ""}`
+                }. Pick the field and new value,
                 then scan to preview changes.
               </p>
               <div className="batch-edit-field-picker">

@@ -1,6 +1,6 @@
 [package]
 name = "yargle"
-version = "0.54.0"
+version = "0.55.0"
 edition = "2021"
 
 [lib]
@@ -25,6 +25,7 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 chrono = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 rayon = "1"
+tokio = { version = "1", features = ["rt"] }
 themethod3 = { git = "https://github.com/DarkRTA/themethod3", default-features = false }
 midly = "0.5"
 

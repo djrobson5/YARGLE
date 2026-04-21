@@ -5744,7 +5744,7 @@ dependencies = [
 
 [[package]]
 name = "yargle"
-version = "0.54.0"
+version = "0.55.0"
 dependencies = [
  "base64 0.22.1",
  "byteorder",
@@ -5762,6 +5762,7 @@ dependencies = [
  "tauri-plugin-dialog",
  "texture2ddecoder",
  "themethod3",
+ "tokio",
 ]
 
 [[package]]
