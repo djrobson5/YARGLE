@@ -1002,6 +1002,14 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether a path exists and is a directory. Used to validate the remembered
+/// last-opened folder before auto-reopening it on launch (so a moved/deleted
+/// folder is silently forgotten instead of flashing an error).
+#[tauri::command]
+pub fn path_is_dir(path: String) -> bool {
+    Path::new(&path).is_dir()
+}
+
 // --- Duplicate Detection ---
 
 #[derive(Serialize, Clone)]

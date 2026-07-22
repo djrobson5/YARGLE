@@ -25,6 +25,7 @@ pub fn run() {
             commands::sync_yarg_scores,
             commands::get_song_scores,
             commands::reveal_in_explorer,
+            commands::path_is_dir,
             commands::batch_decrypt_moggs,
             commands::find_duplicates,
             commands::delete_files,

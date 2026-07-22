@@ -65,6 +65,30 @@ function App() {
       .catch(() => {});
   }, []);
 
+  // Remember the open library folder and auto-reopen it next launch.
+  useEffect(() => {
+    if (currentFolder) localStorage.setItem("yargle-last-folder", currentFolder);
+  }, [currentFolder]);
+
+  const restoredFolder = useRef(false);
+  useEffect(() => {
+    if (restoredFolder.current) return; // once per launch
+    restoredFolder.current = true;
+    const last = localStorage.getItem("yargle-last-folder");
+    if (!last) return;
+    // Validate first so a moved/deleted folder is quietly forgotten.
+    invoke<boolean>("path_is_dir", { path: last })
+      .then((ok) => {
+        if (ok) {
+          setCurrentFolder(last);
+          openFolder(last);
+        } else {
+          localStorage.removeItem("yargle-last-folder");
+        }
+      })
+      .catch(() => {});
+  }, [openFolder]);
+
   // Progress of an in-flight self-update (the app relaunches on completion).
   useEffect(() => {
     const un = listen<{ phase: string; received: number; total: number }>(
