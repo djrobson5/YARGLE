@@ -39,11 +39,6 @@ fn read_header_bytes(path: &Path) -> Result<Vec<u8>, std::io::Error> {
     Ok(buf)
 }
 
-/// Check if a directory is an unpacked song folder (contains song.ini)
-fn is_song_folder(dir: &Path) -> bool {
-    dir.join("song.ini").is_file()
-}
-
 /// Find the album art image in an unpacked song folder
 fn find_folder_album_art(dir: &Path) -> Option<PathBuf> {
     for name in &["album.png", "album.jpg", "album.jpeg"] {
@@ -74,25 +69,84 @@ fn read_folder_thumbnail(dir: &Path) -> String {
     String::new()
 }
 
-fn collect_song_entries(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
+/// A candidate entry found during enumeration, with the change-detection
+/// signature the scan cache keys on. No file contents are read here — only
+/// directory listings and stats — so enumeration stays fast on slow drives.
+struct ScanEntry {
+    path: PathBuf,
+    mtime: i64,
+    size: i64,
+    is_dir: bool,
+}
+
+fn mtime_secs(md: &fs::Metadata) -> i64 {
+    md.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Walk one directory with a single `read_dir` and no extra stat calls: on
+/// Windows the listing itself carries each entry's metadata, so files cost
+/// nothing beyond the listing, and a song folder is recognized by spotting
+/// `song.ini` among its own entries (instead of a separate path lookup).
+/// Subdirectories are walked in parallel — on external drives enumeration is
+/// bound by per-metadata-op latency, which concurrency hides well.
+fn walk_song_entries(dir: PathBuf, dir_mtime: i64) -> Vec<ScanEntry> {
+    use rayon::prelude::*;
+
+    let rd = match fs::read_dir(&dir) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
     };
-    for entry in entries.filter_map(|e| e.ok()) {
-        let p = entry.path();
-        if p.is_dir() {
-            if is_song_folder(&p) {
-                // This directory is a song entry — add it, don't recurse into it
-                out.push(p);
-            } else {
-                // Regular directory — recurse
-                collect_song_entries(&p, out);
+    let mut files: Vec<ScanEntry> = Vec::new();
+    let mut subdirs: Vec<(PathBuf, i64)> = Vec::new();
+    let mut song_ini: Option<fs::Metadata> = None;
+    for entry in rd.filter_map(|e| e.ok()) {
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_dir() {
+            let dmt = entry.metadata().map(|m| mtime_secs(&m)).unwrap_or(0);
+            subdirs.push((entry.path(), dmt));
+        } else if ft.is_file() {
+            if entry.file_name().eq_ignore_ascii_case("song.ini") {
+                if let Ok(md) = entry.metadata() {
+                    song_ini = Some(md);
+                }
             }
-        } else if p.is_file() && has_stfs_magic(&p) {
-            out.push(p);
+            // Defer the STFS magic check to the parallel parse phase (and the
+            // cache remembers non-song files), so enumeration never opens files.
+            if let Ok(md) = entry.metadata() {
+                files.push(ScanEntry {
+                    mtime: mtime_secs(&md),
+                    size: md.len() as i64,
+                    path: entry.path(),
+                    is_dir: false,
+                });
+            }
         }
     }
+
+    if let Some(ini_md) = song_ini {
+        // This directory is itself a song entry. Signature: song.ini mtime/size,
+        // plus the dir's own mtime so adding/removing album art invalidates.
+        return vec![ScanEntry {
+            mtime: mtime_secs(&ini_md).max(dir_mtime),
+            size: ini_md.len() as i64,
+            path: dir,
+            is_dir: true,
+        }];
+    }
+
+    let mut out = files;
+    let nested: Vec<Vec<ScanEntry>> = subdirs
+        .into_par_iter()
+        .map(|(p, m)| walk_song_entries(p, m))
+        .collect();
+    for v in nested {
+        out.extend(v);
+    }
+    out
 }
 
 /// Parse a single song entry (CON file or song folder) into a SongSummary.
@@ -167,24 +221,56 @@ fn parse_song_entry(file_path: &Path) -> Option<SongSummary> {
 #[tauri::command]
 pub async fn open_folder(app: AppHandle, path: String) -> Result<Vec<SongSummary>, String> {
     use rayon::prelude::*;
+    use std::collections::HashSet;
 
     let dir = Path::new(&path);
     if !dir.is_dir() {
         return Err("Not a valid directory".into());
     }
 
-    // Collect candidate paths recursively (both CON files and song folders)
-    let mut paths: Vec<PathBuf> = Vec::new();
-    collect_song_entries(dir, &mut paths);
+    let _ = app.emit("open-folder-progress", serde_json::json!({
+        "current": 0, "total": 0, "phase": "scanning"
+    }));
 
-    let total = paths.len();
+    // Enumerate candidates with their change signatures (stats only, no reads).
+    // A dedicated wider pool: enumeration is small metadata ops where extra
+    // concurrency hides drive latency, unlike the bulk reads in the parse phase.
+    let enum_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(8)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let root_mtime = fs::metadata(dir).map(|m| mtime_secs(&m)).unwrap_or(0);
+    let entries: Vec<ScanEntry> =
+        enum_pool.install(|| walk_song_entries(dir.to_path_buf(), root_mtime));
+
+    // Serve unchanged entries straight from the scan cache — no file opens.
+    let cache = crate::scan_cache::load(&app, &path);
+    let mut all_songs: Vec<SongSummary> = Vec::with_capacity(entries.len());
+    let mut to_parse: Vec<ScanEntry> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::with_capacity(entries.len());
+    for entry in entries {
+        let key = entry.path.to_string_lossy().to_string();
+        seen.insert(key.clone());
+        match cache.get(&key) {
+            Some(row) if row.mtime == entry.mtime && row.size == entry.size => {
+                if let Some(summary) = &row.summary {
+                    all_songs.push(summary.clone());
+                }
+                // Cached non-song file — skip without re-checking magic.
+            }
+            _ => to_parse.push(entry),
+        }
+    }
+
+    let total = to_parse.len();
     let _ = app.emit("open-folder-progress", serde_json::json!({
         "current": 0, "total": total, "phase": "scanning"
     }));
 
     // Process in chunks to allow progress updates and avoid blocking
     let chunk_size = 200;
-    let mut all_songs: Vec<SongSummary> = Vec::with_capacity(total);
+    let mut new_rows: Vec<(String, i64, i64, Option<SongSummary>)> =
+        Vec::with_capacity(total);
 
     // Use a limited thread pool to avoid disk I/O contention with large libraries
     let pool = rayon::ThreadPoolBuilder::new()
@@ -192,15 +278,34 @@ pub async fn open_folder(app: AppHandle, path: String) -> Result<Vec<SongSummary
         .build()
         .map_err(|e| e.to_string())?;
 
-    for (chunk_idx, chunk) in paths.chunks(chunk_size).enumerate() {
-        let chunk_songs: Vec<SongSummary> = pool.install(|| {
+    for (chunk_idx, chunk) in to_parse.chunks(chunk_size).enumerate() {
+        let chunk_rows: Vec<(String, i64, i64, Option<SongSummary>)> = pool.install(|| {
             chunk
                 .par_iter()
-                .filter_map(|file_path| parse_song_entry(file_path))
+                .map(|entry| {
+                    // The magic check runs here, in parallel, rather than
+                    // serially during enumeration.
+                    let summary = if entry.is_dir || has_stfs_magic(&entry.path) {
+                        parse_song_entry(&entry.path)
+                    } else {
+                        None
+                    };
+                    (
+                        entry.path.to_string_lossy().to_string(),
+                        entry.mtime,
+                        entry.size,
+                        summary,
+                    )
+                })
                 .collect()
         });
 
-        all_songs.extend(chunk_songs);
+        for row in &chunk_rows {
+            if let Some(summary) = &row.3 {
+                all_songs.push(summary.clone());
+            }
+        }
+        new_rows.extend(chunk_rows);
 
         let processed = ((chunk_idx + 1) * chunk_size).min(total);
         let _ = app.emit("open-folder-progress", serde_json::json!({
@@ -209,6 +314,11 @@ pub async fn open_folder(app: AppHandle, path: String) -> Result<Vec<SongSummary
 
         // Yield to the event loop so the UI stays responsive
         tokio::task::yield_now().await;
+    }
+
+    // Persist new results and drop rows for files that disappeared.
+    if let Err(e) = crate::scan_cache::store(&app, &path, &seen, &cache, &new_rows) {
+        eprintln!("scan cache write failed: {}", e);
     }
 
     all_songs.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));

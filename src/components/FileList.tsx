@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { FixedSizeList } from "react-window";
 import type { SongSummary } from "../types";
 import sourcesData from "../data/sources.json";
@@ -34,6 +34,19 @@ interface FileListProps {
 }
 
 export function FileList({ songs, selectedPath, filter, gameOriginFilter, onSelect, modifiedPaths, multiSelected, onToggleMultiSelect }: FileListProps) {
+  // Measure the list's actual container so the virtualized list tracks pane
+  // resizes and window resizes/fullscreen (window.innerHeight-at-render did not).
+  const [container, setContainer] = useState<HTMLDivElement | null>(null);
+  const [listHeight, setListHeight] = useState(400);
+  useEffect(() => {
+    if (!container) return;
+    const update = () => setListHeight(container.clientHeight);
+    const ro = new ResizeObserver(update);
+    ro.observe(container);
+    update();
+    return () => ro.disconnect();
+  }, [container]);
+
   const filtered = useMemo(() => {
     let result = songs;
 
@@ -110,14 +123,16 @@ export function FileList({ songs, selectedPath, filter, gameOriginFilter, onSele
   };
 
   return (
-    <FixedSizeList
-      height={window.innerHeight - 60}
-      width="100%"
-      itemCount={filtered.length}
-      itemSize={56}
-      className="file-list"
-    >
-      {Row}
-    </FixedSizeList>
+    <div ref={setContainer} className="file-list-container">
+      <FixedSizeList
+        height={listHeight}
+        width="100%"
+        itemCount={filtered.length}
+        itemSize={56}
+        className="file-list"
+      >
+        {Row}
+      </FixedSizeList>
+    </div>
   );
 }

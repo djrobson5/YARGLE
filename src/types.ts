@@ -125,3 +125,62 @@ export interface TimeSigEvent {
   numerator: number;
   denominator: number;
 }
+
+// --- RhythmVerse browser (mirrors src-tauri/src/rhythmverse.rs) ---
+
+export interface RvSongFile {
+  file_id: string;
+  song_id: number | null;
+  title: string;
+  artist: string;
+  album: string;
+  genre: string;
+  subgenre: string;
+  year: number | null;
+  decade: string;
+  song_length_sec: number | null;
+  album_art_url: string;
+  charter: string;
+  gameformat: string;
+  gamesource: string;
+  size_bytes: number | null;
+  downloads: number | null;
+  uploader: string;
+  uploaded: string;
+  file_name: string;
+  detail_url: string;
+  download_url: string;
+  // Non-empty when hosted off-site (Google Drive, Mediafire, …).
+  external_url: string;
+  // Per-instrument difficulty tier; >=1 = charted, 0/-1/null = not present.
+  diff_guitar: number | null;
+  diff_bass: number | null;
+  diff_drums: number | null;
+  diff_vocals: number | null;
+  diff_keys: number | null;
+}
+
+export interface RvBrowseResult {
+  songs: RvSongFile[];
+  total_available: number;
+  total_filtered: number;
+  returned: number;
+  page: number;
+}
+
+export interface RvDownloadResult {
+  file_id: string;
+  extracted_to: string;
+  entries: number;
+}
+
+export interface RvDownloadRecord {
+  file_id: string;
+  downloaded_at: string;
+}
+
+export interface UpdateInfo {
+  version: string;
+  url: string;
+  notes: string;
+}

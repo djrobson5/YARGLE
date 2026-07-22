@@ -1,6 +1,6 @@
 [package]
 name = "yargle"
-version = "0.55.0"
+version = "0.56.0"
 edition = "2021"
 
 [lib]
@@ -21,11 +21,12 @@ encoding_rs = "0.8"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 base64 = "0.22"
 texture2ddecoder = "0.0.5"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "cookies"] }
 chrono = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 rayon = "1"
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "time"] }
+zip = "2"
 themethod3 = { git = "https://github.com/DarkRTA/themethod3", default-features = false }
 midly = "0.5"
 

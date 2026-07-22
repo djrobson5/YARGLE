@@ -1,5 +1,7 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import type { UpdateInfo } from "./types";
 import { SearchBar } from "./components/SearchBar";
 import { FileList } from "./components/FileList";
 import { MetadataEditor } from "./components/MetadataEditor";
@@ -10,6 +12,7 @@ import { RenameModal } from "./components/RenameModal";
 import { BatchEditModal } from "./components/BatchEditModal";
 import { OrganizeModal } from "./components/OrganizeModal";
 import { ValidatorModal } from "./components/ValidatorModal";
+import { RhythmVerseModal } from "./components/RhythmVerseModal";
 import { useSongFiles } from "./hooks/useSongFiles";
 
 function App() {
@@ -46,7 +49,61 @@ function App() {
   const [showBatchEdit, setShowBatchEdit] = useState(false);
   const [showOrganize, setShowOrganize] = useState(false);
   const [showValidator, setShowValidator] = useState(false);
+  const [showRhythmVerse, setShowRhythmVerse] = useState(false);
   const [currentFolder, setCurrentFolder] = useState<string | null>(null);
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+
+  // One quiet update check per launch; failures/absence stay silent.
+  useEffect(() => {
+    invoke<UpdateInfo | null>("check_for_update")
+      .then((info) => setUpdate(info))
+      .catch(() => {});
+  }, []);
+
+  // Resizable left pane: width persists across sessions, clamped so the
+  // right panel always keeps a usable minimum.
+  const clampLeftWidth = useCallback((w: number) => {
+    const max = Math.max(280, window.innerWidth - 520);
+    return Math.min(Math.max(w, 280), max);
+  }, []);
+  const [leftWidth, setLeftWidth] = useState<number>(() => {
+    const saved = parseInt(localStorage.getItem("yargle-left-width") || "", 10);
+    return isNaN(saved) ? 320 : saved;
+  });
+  const leftWidthRef = useRef(leftWidth);
+  leftWidthRef.current = leftWidth;
+
+  // Re-clamp when the window itself resizes (e.g. fullscreen toggle)
+  useEffect(() => {
+    const onResize = () => setLeftWidth((w) => clampLeftWidth(w));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [clampLeftWidth]);
+
+  const handleDividerMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startWidth = leftWidthRef.current;
+      let last = startWidth;
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      const onMove = (ev: MouseEvent) => {
+        last = clampLeftWidth(startWidth + (ev.clientX - startX));
+        setLeftWidth(last);
+      };
+      const onUp = () => {
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        localStorage.setItem("yargle-left-width", String(last));
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [clampLeftWidth]
+  );
 
   const handleOpenFolder = useCallback(async () => {
     try {
@@ -101,7 +158,7 @@ function App() {
 
   return (
     <div className="app">
-      <div className="left-panel">
+      <div className="left-panel" style={{ width: leftWidth }}>
         <SearchBar
           value={filter}
           onChange={setFilter}
@@ -113,6 +170,7 @@ function App() {
           onBatchEdit={() => setShowBatchEdit(true)}
           onOrganize={() => setShowOrganize(true)}
           onValidate={() => setShowValidator(true)}
+          onBrowseRhythmVerse={() => setShowRhythmVerse(true)}
           songCount={songs.length}
           songs={songs}
           gameOriginFilter={gameOriginFilter}
@@ -148,7 +206,36 @@ function App() {
           onToggleMultiSelect={toggleMultiSelect}
         />
       </div>
+      <div
+        className="pane-divider"
+        onMouseDown={handleDividerMouseDown}
+        title="Drag to resize"
+      />
       <div className="right-panel">
+        {update && (
+          <div className="update-banner">
+            <span>
+              YARGLE v{update.version} is available
+            </span>
+            <div className="update-banner-actions">
+              <button
+                className="update-banner-view"
+                onClick={() =>
+                  invoke("rv_open_external", { url: update.url }).catch(() => {})
+                }
+              >
+                View release
+              </button>
+              <button
+                className="update-banner-dismiss"
+                onClick={() => setUpdate(null)}
+                title="Dismiss"
+              >
+                &times;
+              </button>
+            </div>
+          </div>
+        )}
         {error && (
           <div className="error-bar">
             <span>{error}</span>
@@ -230,6 +317,16 @@ function App() {
         <ValidatorModal
           paths={songs.map((s) => s.path)}
           onClose={() => setShowValidator(false)}
+        />
+      )}
+      {showRhythmVerse && (
+        <RhythmVerseModal
+          librarySongs={songs}
+          libraryFolder={currentFolder}
+          onLibraryChanged={() => {
+            if (currentFolder) openFolder(currentFolder);
+          }}
+          onClose={() => setShowRhythmVerse(false)}
         />
       )}
       {showBatchEdit && (

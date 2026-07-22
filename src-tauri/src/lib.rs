@@ -1,9 +1,13 @@
 mod album_art;
 mod commands;
 mod dta;
+mod local_db;
 mod midi;
+mod rhythmverse;
+mod scan_cache;
 mod song_ini;
 mod stfs;
+mod updater;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -31,6 +35,13 @@ pub fn run() {
             commands::batch_validate,
             commands::get_chart_overview,
             commands::get_chart_notes,
+            rhythmverse::rv_browse,
+            rhythmverse::rv_download,
+            rhythmverse::rv_download_records,
+            rhythmverse::rv_open_external,
+            rhythmverse::rv_opened_ids,
+            rhythmverse::rv_mark_opened,
+            updater::check_for_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

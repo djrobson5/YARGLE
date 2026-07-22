@@ -28,6 +28,7 @@ interface SearchBarProps {
   onBatchEdit?: () => void;
   onOrganize?: () => void;
   onValidate?: () => void;
+  onBrowseRhythmVerse?: () => void;
   songCount: number;
   songs: SongSummary[];
   gameOriginFilter: string | null;
@@ -38,7 +39,7 @@ interface SearchBarProps {
   filteredCount: number;
 }
 
-export function SearchBar({ value, onChange, onOpenFolder, onOpenOptions, onDecryptMoggs, onFindDuplicates, onBatchRename, onBatchEdit, onOrganize, onValidate, songCount, songs, gameOriginFilter, onGameOriginFilter, multiSelectedCount, onClearMultiSelect, onSelectAllVisible, filteredCount }: SearchBarProps) {
+export function SearchBar({ value, onChange, onOpenFolder, onOpenOptions, onDecryptMoggs, onFindDuplicates, onBatchRename, onBatchEdit, onOrganize, onValidate, onBrowseRhythmVerse, songCount, songs, gameOriginFilter, onGameOriginFilter, multiSelectedCount, onClearMultiSelect, onSelectAllVisible, filteredCount }: SearchBarProps) {
   const hasTools = songCount > 0;
 
   // Build list of unique game origins present in the loaded songs, sorted by count descending
@@ -71,6 +72,15 @@ export function SearchBar({ value, onChange, onOpenFolder, onOpenOptions, onDecr
         <button className="open-folder-btn" onClick={onOpenFolder} title="Open Folder">
           Open Folder
         </button>
+        {onBrowseRhythmVerse && (
+          <button
+            className="open-folder-btn rv-open-btn"
+            onClick={onBrowseRhythmVerse}
+            title="Browse and download songs from RhythmVerse"
+          >
+            Browse RhythmVerse
+          </button>
+        )}
         <input
           type="text"
           placeholder="Filter"
