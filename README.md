@@ -2,6 +2,8 @@
 
 **YARG Library Editor** — a Windows desktop app for managing custom-song libraries for [YARG](https://yarg.in/) (Yet Another Rhythm Game) and other Rock Band–style rhythm games.
 
+![YARGLE editing a 20k-song library](docs/screenshot.png)
+
 YARGLE understands both formats a custom-song library contains:
 
 - **Xbox 360 CON/STFS packages** (`*_rb3con` and friends) — read and edited in place with a custom STFS implementation that preserves the original block/hash layout
@@ -54,6 +56,10 @@ npm run tauri build   # release build -> src-tauri/target/release/yargle.exe
 ```
 
 Stack: [Tauri 2](https://tauri.app/) (Rust backend), React 19 + TypeScript + Vite frontend.
+
+## License
+
+[MIT](LICENSE)
 
 ## Notes & credits
 
