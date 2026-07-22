@@ -59,6 +59,12 @@ pub struct SongSummary {
     pub author: String,
     #[serde(default)]
     pub game_origin: String,
+    /// File modified time (Unix seconds) — the "date added" signal for the
+    /// list's "Recently added" sort. Injected in `open_folder` from the entry's
+    /// authoritative mtime (which the scan cache already tracks), so it stays
+    /// correct even for rows served straight from cache.
+    #[serde(default)]
+    pub added_at: i64,
 }
 
 /// Full details for the metadata editor

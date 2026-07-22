@@ -180,6 +180,7 @@ fn parse_song_entry(file_path: &Path) -> Option<SongSummary> {
             album_name: meta.album_name,
             author: meta.author,
             game_origin,
+            added_at: 0, // set by open_folder from the entry's mtime
         })
     } else {
         // CON/STFS file — seek-based extraction (reads ~20-50KB, not the full file)
@@ -214,6 +215,7 @@ fn parse_song_entry(file_path: &Path) -> Option<SongSummary> {
             album_name,
             author,
             game_origin,
+            added_at: 0, // set by open_folder from the entry's mtime
         })
     }
 }
@@ -254,7 +256,9 @@ pub async fn open_folder(app: AppHandle, path: String) -> Result<Vec<SongSummary
         match cache.get(&key) {
             Some(row) if row.mtime == entry.mtime && row.size == entry.size => {
                 if let Some(summary) = &row.summary {
-                    all_songs.push(summary.clone());
+                    let mut s = summary.clone();
+                    s.added_at = row.mtime; // authoritative, even for old cache blobs
+                    all_songs.push(s);
                 }
                 // Cached non-song file — skip without re-checking magic.
             }
@@ -285,11 +289,14 @@ pub async fn open_folder(app: AppHandle, path: String) -> Result<Vec<SongSummary
                 .map(|entry| {
                     // The magic check runs here, in parallel, rather than
                     // serially during enumeration.
-                    let summary = if entry.is_dir || has_stfs_magic(&entry.path) {
+                    let mut summary = if entry.is_dir || has_stfs_magic(&entry.path) {
                         parse_song_entry(&entry.path)
                     } else {
                         None
                     };
+                    if let Some(s) = summary.as_mut() {
+                        s.added_at = entry.mtime;
+                    }
                     (
                         entry.path.to_string_lossy().to_string(),
                         entry.mtime,

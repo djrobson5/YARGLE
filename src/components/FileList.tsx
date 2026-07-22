@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { FixedSizeList } from "react-window";
-import type { SongSummary } from "../types";
+import type { SongSummary, SortMode } from "../types";
 import sourcesData from "../data/sources.json";
 
 interface SourceEntry {
@@ -27,13 +27,14 @@ interface FileListProps {
   selectedPath: string | null;
   filter: string;
   gameOriginFilter: string | null;
+  sortBy: SortMode;
   onSelect: (path: string) => void;
   modifiedPaths: Set<string>;
   multiSelected: Set<string>;
   onToggleMultiSelect: (path: string) => void;
 }
 
-export function FileList({ songs, selectedPath, filter, gameOriginFilter, onSelect, modifiedPaths, multiSelected, onToggleMultiSelect }: FileListProps) {
+export function FileList({ songs, selectedPath, filter, gameOriginFilter, sortBy, onSelect, modifiedPaths, multiSelected, onToggleMultiSelect }: FileListProps) {
   // Measure the list's actual container so the virtualized list tracks pane
   // resizes and window resizes/fullscreen (window.innerHeight-at-render did not).
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
@@ -73,6 +74,16 @@ export function FileList({ songs, selectedPath, filter, gameOriginFilter, onSele
     return result;
   }, [songs, filter, gameOriginFilter]);
 
+  // Apply the chosen order. "name" needs no work — the backend already returns
+  // songs alphabetically and filtering preserves that order, so we only sort a
+  // copy for "recent" (newest file first, name as a stable tiebreak).
+  const sorted = useMemo(() => {
+    if (sortBy !== "recent") return filtered;
+    return [...filtered].sort(
+      (a, b) => b.added_at - a.added_at || a.display_name.localeCompare(b.display_name)
+    );
+  }, [filtered, sortBy]);
+
   if (songs.length === 0) {
     return (
       <div className="file-list-empty">
@@ -83,7 +94,7 @@ export function FileList({ songs, selectedPath, filter, gameOriginFilter, onSele
   }
 
   const Row = ({ index, style }: { index: number; style: React.CSSProperties }) => {
-    const song = filtered[index];
+    const song = sorted[index];
     const isSelected = song.path === selectedPath;
     const isModified = modifiedPaths.has(song.path);
     const isMultiSelected = multiSelected.has(song.path);
@@ -127,7 +138,7 @@ export function FileList({ songs, selectedPath, filter, gameOriginFilter, onSele
       <FixedSizeList
         height={listHeight}
         width="100%"
-        itemCount={filtered.length}
+        itemCount={sorted.length}
         itemSize={56}
         className="file-list"
       >

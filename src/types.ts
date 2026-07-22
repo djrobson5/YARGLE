@@ -8,7 +8,13 @@ export interface SongSummary {
   album_name: string;
   author: string;
   game_origin: string;
+  // File modified time (Unix seconds); drives the "Recently added" sort.
+  added_at: number;
 }
+
+// Library list sort order: "name" = alphabetical (default), "recent" = newest
+// file first (by added_at).
+export type SortMode = "name" | "recent";
 
 export interface SongMetadata {
   shortname: string;

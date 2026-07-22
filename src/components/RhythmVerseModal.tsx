@@ -12,6 +12,12 @@ interface RhythmVerseModalProps {
   libraryFolder: string | null;
   /** Called after a successful download so the caller can refresh the list. */
   onLibraryChanged?: () => void;
+  /** Hidden-but-mounted: keeps browsing state alive while out of the way. */
+  minimized?: boolean;
+  /** Tuck the modal away without unmounting it (preserves query/page/scroll). */
+  onMinimize?: () => void;
+  /** Bring a minimized modal back to the foreground. */
+  onRestore?: () => void;
   onClose: () => void;
 }
 
@@ -24,6 +30,16 @@ interface DownloadProgress {
 }
 
 const RECORDS_PER_PAGE = 25;
+
+// Downloads run concurrently up to this cap; extra clicks queue behind them.
+const MAX_CONCURRENT_DOWNLOADS = 3;
+
+// Live state of one queued/in-flight download (mirrors the backend progress
+// phases, plus "queued" for songs still waiting for a free slot).
+interface DlState {
+  phase: "queued" | "starting" | "downloading" | "extracting" | "saving" | "done";
+  pct: number;
+}
 
 const SORT_OPTIONS = [
   { value: "update_date", label: "Last updated" },
@@ -185,6 +201,9 @@ export function RhythmVerseModal({
   librarySongs,
   libraryFolder,
   onLibraryChanged,
+  minimized = false,
+  onMinimize,
+  onRestore,
   onClose,
 }: RhythmVerseModalProps) {
   const [text, setText] = useState(""); // input box
@@ -204,12 +223,19 @@ export function RhythmVerseModal({
   );
   // file_ids whose off-site link the user has opened in the browser
   const [openedIds, setOpenedIds] = useState<Set<string>>(new Set());
-  // the single in-flight download, if any (downloads run one at a time)
-  const [activeDownload, setActiveDownload] = useState<{
-    fileId: string;
-    phase: string;
-    pct: number;
-  } | null>(null);
+  // Per-file progress for everything currently downloading OR queued, keyed by
+  // file_id. Up to MAX_CONCURRENT_DOWNLOADS run at once; the rest wait in
+  // `queueRef` with phase "queued". An entry is removed on success (the row then
+  // shows "In library") or on error (reverts to a Download button).
+  const [dlProgress, setDlProgress] = useState<Map<string, DlState>>(new Map());
+  // Pending (song, dest) pairs waiting for a free slot, and the live in-flight
+  // count. Refs, not state, so the scheduler reads current values without
+  // stale-closure races and without re-rendering on every tick.
+  const queueRef = useRef<Array<{ song: RvSongFile; dest: string }>>([]);
+  const activeCountRef = useRef(0);
+  // file_ids that are queued or downloading — guards against enqueuing the same
+  // song twice (e.g. a double-click).
+  const inFlightRef = useRef<Set<string>>(new Set());
   // true while a library rescan (triggered by the Refresh button) is in flight
   const [libRefreshing, setLibRefreshing] = useState(false);
   // file_id whose link was just copied, for a transient "Copied!" indicator
@@ -241,19 +267,25 @@ export function RhythmVerseModal({
     setLibRefreshing(false);
   }, [librarySongs]);
 
-  // Track progress of the active download.
+  // Fold each backend progress event into the per-file map. Events are tagged
+  // with file_id, so several concurrent downloads update independently. Ignore
+  // events for files we're no longer tracking (already finished/removed).
   useEffect(() => {
     const un = listen<DownloadProgress>("rv-download-progress", (e) => {
       const p = e.payload;
-      setActiveDownload((cur) => {
-        if (!cur || cur.fileId !== p.file_id) return cur;
+      if (p.phase === "error") return; // surfaced by the runDownload catch
+      setDlProgress((cur) => {
+        const prev = cur.get(p.file_id);
+        if (!prev) return cur;
         const pct =
           p.phase === "extracting" || p.phase === "done"
             ? 100
             : p.total > 0
             ? Math.round((p.received / p.total) * 100)
-            : cur.pct;
-        return { fileId: p.file_id, phase: p.phase, pct };
+            : prev.pct;
+        const next = new Map(cur);
+        next.set(p.file_id, { phase: p.phase as DlState["phase"], pct });
+        return next;
       });
     });
     return () => {
@@ -341,37 +373,68 @@ export function RhythmVerseModal({
     [refreshDownloads]
   );
 
-  const handleDownload = useCallback(
-    async (song: RvSongFile) => {
-      if (activeDownload) return; // one at a time
-      let dest = libraryFolder;
-      if (!dest) {
-        const picked = await open({ directory: true, multiple: false });
-        if (!picked) return;
-        dest = picked as string;
-      }
-      setError(null);
-      setActiveDownload({ fileId: song.file_id, phase: "starting", pct: 0 });
-      try {
-        await invoke("rv_download", {
-          fileId: song.file_id,
-          destFolder: dest,
-          songId: song.song_id,
-          artist: song.artist,
-          title: song.title,
-          fileName: song.file_name,
-          uploaded: song.uploaded,
-        });
-        refreshDownloads();
-        onLibraryChanged?.();
-      } catch (e) {
-        setError(String(e));
-      } finally {
-        setActiveDownload(null);
-      }
-    },
-    [activeDownload, libraryFolder, onLibraryChanged, refreshDownloads]
-  );
+  // Run one download to completion, then free its slot and pull the next queued
+  // item. The backend `rv_download` is fully independent per call (own HTTP
+  // client/cookie jar, own buffer), so several can safely run at once.
+  const runDownload = async (song: RvSongFile, dest: string) => {
+    setDlProgress((cur) => new Map(cur).set(song.file_id, { phase: "starting", pct: 0 }));
+    try {
+      await invoke("rv_download", {
+        fileId: song.file_id,
+        destFolder: dest,
+        songId: song.song_id,
+        artist: song.artist,
+        title: song.title,
+        fileName: song.file_name,
+        uploaded: song.uploaded,
+      });
+      refreshDownloads();
+      onLibraryChanged?.();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      // Succeeded (row becomes "In library") or failed (reverts to a Download
+      // button) — either way drop it from the map and free the slot.
+      setDlProgress((cur) => {
+        const next = new Map(cur);
+        next.delete(song.file_id);
+        return next;
+      });
+      inFlightRef.current.delete(song.file_id);
+      activeCountRef.current -= 1;
+      pumpQueue();
+    }
+  };
+
+  // Start queued downloads until the concurrency cap is reached.
+  const pumpQueue = () => {
+    while (
+      activeCountRef.current < MAX_CONCURRENT_DOWNLOADS &&
+      queueRef.current.length > 0
+    ) {
+      const next = queueRef.current.shift()!;
+      activeCountRef.current += 1;
+      void runDownload(next.song, next.dest);
+    }
+  };
+
+  // Queue a song for download (up to MAX_CONCURRENT_DOWNLOADS run at once).
+  // Resolves the destination once, up front, so a burst of clicks never stacks
+  // folder pickers.
+  const handleDownload = async (song: RvSongFile) => {
+    if (inFlightRef.current.has(song.file_id)) return; // already queued/running
+    let dest = libraryFolder;
+    if (!dest) {
+      const picked = await open({ directory: true, multiple: false });
+      if (!picked) return;
+      dest = picked as string;
+    }
+    setError(null);
+    inFlightRef.current.add(song.file_id);
+    setDlProgress((cur) => new Map(cur).set(song.file_id, { phase: "queued", pct: 0 }));
+    queueRef.current.push({ song, dest });
+    pumpQueue();
+  };
 
   // Build a normalized artist+title index of the local library. Deliberately
   // NO title-only matching: many distinct songs share a title ("My Way"), and
@@ -491,6 +554,14 @@ export function RhythmVerseModal({
     };
   }, [query, sortBy, sortOrder, page]);
 
+  // Reset the results list to the top whenever the visible set changes (page
+  // turn, new search, or re-sort). Without this, turning the page while scrolled
+  // to the bottom leaves you stranded at the bottom of the new page.
+  const resultsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    resultsRef.current?.scrollTo({ top: 0 });
+  }, [query, sortBy, sortOrder, page]);
+
   const submitSearch = () => {
     setPage(1);
     setQuery(text.trim());
@@ -500,14 +571,49 @@ export function RhythmVerseModal({
     ? Math.max(1, Math.ceil(result.total_filtered / RECORDS_PER_PAGE))
     : 1;
 
+  // Split the in-flight map into "downloading now" vs "waiting" for the status
+  // bar and the minimized-pill badge.
+  let downloadingCount = 0;
+  let queuedCount = 0;
+  for (const st of dlProgress.values()) {
+    if (st.phase === "queued") queuedCount += 1;
+    else downloadingCount += 1;
+  }
+
+  // Clicking outside the panel (on the dimmed backdrop / main window) tucks the
+  // modal away rather than closing it, so a stray click never loses your place.
+  const dismiss = onMinimize ?? onClose;
+
   return (
-    <div className="art-search-overlay" onClick={onClose}>
+    <>
+      <div
+        className="art-search-overlay"
+        style={minimized ? { display: "none" } : undefined}
+        onClick={dismiss}
+      >
       <div className="art-search-panel rv-panel" onClick={(e) => e.stopPropagation()}>
         <div className="art-search-header">
           <h3>Browse RhythmVerse</h3>
-          <button className="art-search-close" onClick={onClose}>
-            &times;
-          </button>
+          <div className="rv-header-actions">
+            {onMinimize && (
+              <button
+                className="art-search-close"
+                onClick={onMinimize}
+                title="Minimize — keep your place and return to the app (e.g. to paste a link)"
+                aria-label="Minimize"
+              >
+                &minus;
+              </button>
+            )}
+            <button
+              className="art-search-close"
+              onClick={onClose}
+              title="Close"
+              aria-label="Close"
+            >
+              &times;
+            </button>
+          </div>
         </div>
 
         <div className="rv-controls">
@@ -571,9 +677,16 @@ export function RhythmVerseModal({
             </span>
           )}
           {loading && <span className="rv-status-loading">Loading…</span>}
+          {(downloadingCount > 0 || queuedCount > 0) && (
+            <span className="rv-status-dl">
+              {downloadingCount > 0 ? `Downloading ${downloadingCount}` : ""}
+              {downloadingCount > 0 && queuedCount > 0 ? " · " : ""}
+              {queuedCount > 0 ? `${queuedCount} queued` : ""}
+            </span>
+          )}
         </div>
 
-        <div className="rv-results">
+        <div className="rv-results" ref={resultsRef}>
           {error && <div className="art-search-error">{error}</div>}
 
           {!error && result && result.songs.length === 0 && !loading && (
@@ -587,7 +700,8 @@ export function RhythmVerseModal({
             result.songs.map((song) => {
               const have = inLibrary(song);
               const hasUpdate = needsUpdate(song);
-              const isActive = activeDownload?.fileId === song.file_id;
+              const dl = dlProgress.get(song.file_id);
+              const isActive = !!dl;
               const meta = [song.album, song.year ? String(song.year) : "", song.genre]
                 .filter(Boolean)
                 .join(" · ");
@@ -681,18 +795,24 @@ export function RhythmVerseModal({
                       <div className="rv-dl-progress">
                         <div className="rv-dl-bar-outer">
                           <div
-                            className="rv-dl-bar-inner"
-                            style={{ width: `${activeDownload!.pct}%` }}
+                            className={`rv-dl-bar-inner${
+                              dl!.phase === "queued" ? " rv-dl-bar-queued" : ""
+                            }`}
+                            style={{
+                              width: dl!.phase === "queued" ? "100%" : `${dl!.pct}%`,
+                            }}
                           />
                         </div>
                         <span className="rv-dl-phase">
-                          {activeDownload!.phase === "extracting"
+                          {dl!.phase === "queued"
+                            ? "Queued…"
+                            : dl!.phase === "extracting"
                             ? "Extracting…"
-                            : activeDownload!.phase === "saving"
+                            : dl!.phase === "saving"
                             ? "Saving…"
-                            : activeDownload!.phase === "starting"
+                            : dl!.phase === "starting"
                             ? "Starting…"
-                            : `${activeDownload!.pct}%`}
+                            : `${dl!.pct}%`}
                         </span>
                       </div>
                     ) : hasUpdate ? (
@@ -707,7 +827,6 @@ export function RhythmVerseModal({
                       ) : (
                         <button
                           className="rv-update-btn"
-                          disabled={!!activeDownload}
                           onClick={() => handleDownload(song)}
                           title={`Updated on RhythmVerse (${formatDate(song.uploaded)}) since you downloaded it — click to re-download and replace`}
                         >
@@ -757,7 +876,6 @@ export function RhythmVerseModal({
                     ) : (
                       <button
                         className="rv-dl-btn"
-                        disabled={!!activeDownload}
                         onClick={() => handleDownload(song)}
                         title={
                           libraryFolder
@@ -795,5 +913,26 @@ export function RhythmVerseModal({
         </div>
       </div>
     </div>
+      {minimized && (
+        <button
+          className="rv-restore-pill"
+          onClick={onRestore}
+          title="Resume browsing RhythmVerse where you left off"
+        >
+          <span className="rv-restore-icon">♪</span>
+          RhythmVerse
+          {dlProgress.size > 0 && (
+            <span
+              className="rv-restore-badge"
+              title={`${dlProgress.size} download${
+                dlProgress.size !== 1 ? "s" : ""
+              } in progress`}
+            >
+              {dlProgress.size}
+            </span>
+          )}
+        </button>
+      )}
+    </>
   );
 }

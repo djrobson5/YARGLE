@@ -273,6 +273,21 @@ body {
   border-color: var(--accent);
 }
 
+.sort-select {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 6px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+}
+
+.sort-select:focus {
+  border-color: var(--accent);
+}
+
 .song-count {
   font-size: 11px;
   color: var(--text-muted);
@@ -2488,6 +2503,50 @@ section h3 {
   height: 80vh;
 }
 
+/* Minimize + close buttons sit together in the header. */
+.rv-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Floating pill shown while the modal is minimized; click to restore. */
+.rv-restore-pill {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+
+.rv-restore-pill:hover {
+  background: var(--accent-hover);
+}
+
+.rv-restore-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
+.rv-restore-badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.25);
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .rv-controls {
   display: flex;
   gap: 8px;
@@ -2562,6 +2621,12 @@ section h3 {
 
 .rv-status-loading {
   color: var(--accent);
+}
+
+.rv-status-dl {
+  margin-left: auto;
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .rv-results {
@@ -2929,6 +2994,19 @@ section h3 {
   height: 100%;
   background: var(--accent);
   transition: width 0.15s ease;
+}
+
+/* A queued (not-yet-started) download shows a muted striped bar instead of a
+   progress fill, so it reads as "waiting" rather than "stuck at 0%". */
+.rv-dl-bar-queued {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--border),
+    var(--border) 4px,
+    transparent 4px,
+    transparent 8px
+  );
+  opacity: 0.7;
 }
 
 .rv-dl-phase {

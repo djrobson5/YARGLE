@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { UpdateInfo } from "./types";
+import type { SortMode, UpdateInfo } from "./types";
 import { SearchBar } from "./components/SearchBar";
 import { FileList } from "./components/FileList";
 import { MetadataEditor } from "./components/MetadataEditor";
@@ -43,6 +43,13 @@ function App() {
 
   const [filter, setFilter] = useState("");
   const [gameOriginFilter, setGameOriginFilter] = useState<string | null>(null);
+  // List sort order; persisted so the choice sticks across launches.
+  const [sortBy, setSortBy] = useState<SortMode>(
+    () => (localStorage.getItem("yargle-sort-mode") as SortMode) || "name"
+  );
+  useEffect(() => {
+    localStorage.setItem("yargle-sort-mode", sortBy);
+  }, [sortBy]);
   const [showScoreSync, setShowScoreSync] = useState(false);
   const [showMoggDecrypt, setShowMoggDecrypt] = useState(false);
   const [showDuplicates, setShowDuplicates] = useState(false);
@@ -51,6 +58,9 @@ function App() {
   const [showOrganize, setShowOrganize] = useState(false);
   const [showValidator, setShowValidator] = useState(false);
   const [showRhythmVerse, setShowRhythmVerse] = useState(false);
+  // The RhythmVerse modal stays mounted while minimized so browsing state
+  // (query, page, scroll) survives; this flag just hides it visually.
+  const [rvMinimized, setRvMinimized] = useState(false);
   const [currentFolder, setCurrentFolder] = useState<string | null>(null);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   // Non-null while a one-click self-update is in flight.
@@ -223,9 +233,14 @@ function App() {
           onBatchEdit={() => setShowBatchEdit(true)}
           onOrganize={() => setShowOrganize(true)}
           onValidate={() => setShowValidator(true)}
-          onBrowseRhythmVerse={() => setShowRhythmVerse(true)}
+          onBrowseRhythmVerse={() => {
+            setShowRhythmVerse(true);
+            setRvMinimized(false);
+          }}
           songCount={songs.length}
           songs={songs}
+          sortBy={sortBy}
+          onSortChange={setSortBy}
           gameOriginFilter={gameOriginFilter}
           onGameOriginFilter={setGameOriginFilter}
           multiSelectedCount={multiSelected.size}
@@ -251,6 +266,7 @@ function App() {
           selectedPath={selectedPath}
           filter={filter}
           gameOriginFilter={gameOriginFilter}
+          sortBy={sortBy}
           onSelect={selectSong}
           modifiedPaths={new Set(
             modifiedFields.size > 0 && details ? [details.path] : []
@@ -397,10 +413,16 @@ function App() {
         <RhythmVerseModal
           librarySongs={songs}
           libraryFolder={currentFolder}
+          minimized={rvMinimized}
+          onMinimize={() => setRvMinimized(true)}
+          onRestore={() => setRvMinimized(false)}
           onLibraryChanged={() => {
             if (currentFolder) openFolder(currentFolder);
           }}
-          onClose={() => setShowRhythmVerse(false)}
+          onClose={() => {
+            setShowRhythmVerse(false);
+            setRvMinimized(false);
+          }}
         />
       )}
       {showBatchEdit && (

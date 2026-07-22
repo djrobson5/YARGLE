@@ -1,5 +1,5 @@
 import React, { useMemo } from "react";
-import type { SongSummary } from "../types";
+import type { SongSummary, SortMode } from "../types";
 import sourcesData from "../data/sources.json";
 
 interface SourceEntry {
@@ -31,6 +31,8 @@ interface SearchBarProps {
   onBrowseRhythmVerse?: () => void;
   songCount: number;
   songs: SongSummary[];
+  sortBy: SortMode;
+  onSortChange: (mode: SortMode) => void;
   gameOriginFilter: string | null;
   onGameOriginFilter: (origin: string | null) => void;
   multiSelectedCount: number;
@@ -39,7 +41,7 @@ interface SearchBarProps {
   filteredCount: number;
 }
 
-export function SearchBar({ value, onChange, onOpenFolder, onOpenOptions, onDecryptMoggs, onFindDuplicates, onBatchRename, onBatchEdit, onOrganize, onValidate, onBrowseRhythmVerse, songCount, songs, gameOriginFilter, onGameOriginFilter, multiSelectedCount, onClearMultiSelect, onSelectAllVisible, filteredCount }: SearchBarProps) {
+export function SearchBar({ value, onChange, onOpenFolder, onOpenOptions, onDecryptMoggs, onFindDuplicates, onBatchRename, onBatchEdit, onOrganize, onValidate, onBrowseRhythmVerse, songCount, songs, sortBy, onSortChange, gameOriginFilter, onGameOriginFilter, multiSelectedCount, onClearMultiSelect, onSelectAllVisible, filteredCount }: SearchBarProps) {
   const hasTools = songCount > 0;
 
   // Build list of unique game origins present in the loaded songs, sorted by count descending
@@ -88,6 +90,17 @@ export function SearchBar({ value, onChange, onOpenFolder, onOpenOptions, onDecr
           onChange={(e) => onChange(e.target.value)}
           className="search-input"
         />
+        {songCount > 0 && (
+          <select
+            className="sort-select"
+            value={sortBy}
+            onChange={(e) => onSortChange(e.target.value as SortMode)}
+            title="Sort the song list"
+          >
+            <option value="name">Name (A–Z)</option>
+            <option value="recent">Recently added</option>
+          </select>
+        )}
         {songCount > 0 && <span className="song-count">{songCount} songs</span>}
       </div>
       {hasTools && (
