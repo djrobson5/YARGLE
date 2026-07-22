@@ -15,24 +15,42 @@ interface SongScore {
   band_score: number;
   band_stars: number;
   speed: number;
+  build: string;
+  attempts: number;
 }
 
 interface SongScoresProps {
   songName: string;
+  artist: string;
 }
 
+// Render the star rating with YARG's own star medallion sprites (bundled under
+// public/icons/stars/). YARG tiers: 1-5 = silver stars, 6 = five gold stars,
+// 7+ = brutal. We show only the earned stars (color conveys the tier).
 function StarDisplay({ count }: { count: number }) {
   if (count <= 0) return null;
-  const isGold = count >= 6;
-  const numStars = Math.min(count, 5);
+  const TOTAL = 5;
+  const icon = count >= 7 ? "StarBrutal" : count >= 6 ? "StarGold" : "StarStandard";
+  const filled = count >= 6 ? TOTAL : Math.min(count, TOTAL);
+  const label =
+    count >= 7 ? "Brutal stars" : count >= 6 ? "Gold stars" : `${count} of 5 stars`;
   return (
-    <span className={`song-score-stars ${isGold ? "song-score-stars-gold" : ""}`}>
-      {"\u2605".repeat(numStars)}
+    <span className="song-score-stars" title={label}>
+      {Array.from({ length: filled }, (_, i) => (
+        <img key={i} className="song-score-star" src={`/icons/stars/${icon}.png`} alt="" />
+      ))}
     </span>
   );
 }
 
-export function SongScores({ songName }: SongScoresProps) {
+// Short badge label per build, so a play's source build is obvious at a glance.
+function buildBadgeClass(build: string): string {
+  if (build === "Nightly") return "song-score-build song-score-build-nightly";
+  if (build === "Stable") return "song-score-build song-score-build-stable";
+  return "song-score-build song-score-build-both";
+}
+
+export function SongScores({ songName, artist }: SongScoresProps) {
   const [scores, setScores] = useState<SongScore[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +63,7 @@ export function SongScores({ songName }: SongScoresProps) {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    invoke<SongScore[]>("get_song_scores", { songName })
+    invoke<SongScore[]>("get_song_scores", { songName, artist })
       .then((result) => {
         if (!cancelled) setScores(result);
       })
@@ -56,7 +74,7 @@ export function SongScores({ songName }: SongScoresProps) {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [songName]);
+  }, [songName, artist]);
 
   return (
     <div className="song-scores">
@@ -74,6 +92,9 @@ export function SongScores({ songName }: SongScoresProps) {
                 <span className="song-score-instrument">{s.instrument}</span>
                 <span className="song-score-difficulty">{s.difficulty}</span>
                 {s.is_fc && <span className="song-score-fc">FC</span>}
+                <span className={buildBadgeClass(s.build)} title={`Played on YARG ${s.build}`}>
+                  {s.build}
+                </span>
               </div>
               <div className="song-score-mid">
                 <span className="song-score-percent">
@@ -83,7 +104,17 @@ export function SongScores({ songName }: SongScoresProps) {
               </div>
               <div className="song-score-bottom">
                 <span className="song-score-value">{s.score.toLocaleString()}</span>
-                <span className="song-score-date">{s.date}</span>
+                <span className="song-score-date">
+                  {s.attempts > 1 && (
+                    <span
+                      className="song-score-attempts"
+                      title={`Best of ${s.attempts} plays on this instrument & difficulty`}
+                    >
+                      best of {s.attempts} ·{" "}
+                    </span>
+                  )}
+                  {s.date}
+                </span>
               </div>
               {s.speed !== 1.0 && (
                 <div className="song-score-speed">{(s.speed * 100).toFixed(0)}% speed</div>

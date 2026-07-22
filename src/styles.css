@@ -1349,7 +1349,33 @@ section h3 {
   background: rgba(255, 215, 0, 0.15);
   padding: 1px 5px;
   border-radius: 3px;
+}
+
+/* Which YARG build a play came from — right-anchored source tag. */
+.song-score-build {
   margin-left: auto;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+
+.song-score-build-stable {
+  color: #7fd7a0;
+  background: rgba(127, 215, 160, 0.15);
+}
+
+.song-score-build-nightly {
+  color: #c9a0ff;
+  background: rgba(201, 160, 255, 0.15);
+}
+
+.song-score-build-both {
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
 }
 
 .song-score-mid {
@@ -1366,12 +1392,15 @@ section h3 {
 }
 
 .song-score-stars {
-  font-size: 12px;
-  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
 }
 
-.song-score-stars-gold {
-  color: #ffd700;
+.song-score-star {
+  width: 16px;
+  height: 16px;
+  display: block;
 }
 
 .song-score-bottom {
@@ -1388,6 +1417,11 @@ section h3 {
 .song-score-date {
   font-size: 10px;
   color: var(--text-muted);
+}
+
+.song-score-attempts {
+  color: var(--text-secondary);
+  font-style: italic;
 }
 
 .song-score-speed {
@@ -2550,12 +2584,33 @@ section h3 {
 }
 
 .rv-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   font-size: 13px;
   font-weight: 600;
+}
+
+.rv-title-link {
   color: var(--text-primary);
+  text-decoration: none;
+  cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.rv-title-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.rv-copied {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--success);
 }
 
 .rv-artist {
@@ -2585,32 +2640,26 @@ section h3 {
 
 .rv-instruments {
   display: flex;
-  gap: 3px;
-  margin-top: 5px;
+  gap: 8px;
+  margin-top: 6px;
 }
 
-.rv-inst {
-  display: inline-flex;
+.rv-inst-ring {
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border-radius: 3px;
+  gap: 1px;
+}
+
+.rv-inst-ring-off {
+  opacity: 0.4;
+}
+
+.rv-inst-letter {
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1;
-  cursor: default;
-}
-
-.rv-inst-on {
-  background: var(--accent);
-  color: #fff;
-}
-
-.rv-inst-off {
-  background: var(--bg-primary);
-  color: var(--text-muted);
-  opacity: 0.35;
+  color: var(--text-secondary);
 }
 
 .rv-side {
@@ -2638,6 +2687,16 @@ section h3 {
   text-transform: uppercase;
   font-size: 10px;
   letter-spacing: 0.3px;
+}
+
+/* The site's game-format icon (Clone Hero, Rock Band, YARG, …). */
+.rv-format-icon {
+  height: 18px;
+  width: auto;
+  max-width: 46px;
+  object-fit: contain;
+  display: block;
+  border-radius: 2px;
 }
 
 .rv-ext-host {
@@ -2699,6 +2758,110 @@ section h3 {
   font-size: 12px;
   font-weight: 600;
   color: var(--success);
+}
+
+/* Editor "RhythmVerse Link" field (Technical section). */
+.rv-link-field .rv-link-current {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.rv-link-field .rv-link-current input {
+  flex: 1;
+  min-width: 0;
+}
+
+.rv-link-save,
+.rv-link-clear {
+  padding: 5px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.rv-link-save {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+}
+
+.rv-link-save:disabled {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.rv-link-clear {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+.rv-link-badge {
+  flex: 1;
+  color: var(--success);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: monospace;
+  overflow-wrap: anywhere;
+}
+
+.rv-link-hint {
+  display: block;
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.rv-link-error {
+  display: block;
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--error-text);
+}
+
+/* Stacks the "Open ↗" and "✓ Got it" actions on an external row. */
+.rv-ext-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+/* Secondary, low-emphasis "I already have it" confirmation. */
+.rv-gotit-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  padding: 3px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.rv-gotit-btn:hover {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+/* A manually-marked "In library" is clickable to undo — hint that on hover. */
+.rv-in-lib-manual {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.rv-in-lib-manual:hover {
+  border-color: var(--border);
+  color: var(--text-muted);
 }
 
 .rv-dl-btn {

@@ -73,4 +73,8 @@ pub struct SongDetails {
     pub raw_dta: String,
     pub dta_file_size: u32,
     pub validation_issues: Vec<ValidationIssue>,
+    // True for unpacked song folders (song.ini), false for CON/STFS packages.
+    // The editor uses this to interpret difficulties: song.ini `diff_*` are
+    // native 0-6 tiers, while DTA ranks are the Rock Band 0-400+ scale.
+    pub is_folder: bool,
 }

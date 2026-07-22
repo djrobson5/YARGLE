@@ -24,6 +24,7 @@ pub fn run() {
             commands::get_yarg_score_info,
             commands::sync_yarg_scores,
             commands::get_song_scores,
+            commands::reveal_in_explorer,
             commands::batch_decrypt_moggs,
             commands::find_duplicates,
             commands::delete_files,
@@ -41,6 +42,13 @@ pub fn run() {
             rhythmverse::rv_open_external,
             rhythmverse::rv_opened_ids,
             rhythmverse::rv_mark_opened,
+            rhythmverse::rv_mark_downloaded,
+            rhythmverse::rv_unmark_downloaded,
+            rhythmverse::rv_link_song,
+            rhythmverse::rv_unlink_song,
+            rhythmverse::rv_linked_file_id,
+            rhythmverse::rv_touch_downloaded,
+            rhythmverse::rv_set_upload_baseline,
             updater::check_for_update,
         ])
         .run(tauri::generate_context!())

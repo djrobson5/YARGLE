@@ -1,9 +1,11 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { SongDetails, ValidationIssue } from "../types";
 import { ChartPreviewModal } from "./ChartPreviewModal";
 import { ImageEditor } from "./ImageEditor";
 import { IconSelector } from "./IconSelector";
 import { SongScores } from "./SongScores";
+import { DifficultyRing, TIER_LABELS } from "./DifficultyRing";
 
 interface MetadataEditorProps {
   details: SongDetails;
@@ -33,6 +35,18 @@ const RATINGS = [
 
 const VOCAL_GENDERS = ["male", "female"];
 
+// Pull a RhythmVerse file_id out of a pasted link or raw token. Accepts a full
+// rhythmverse.co/download/… or /songfile/… URL (takes the id segment) or the
+// bare id. IDs are hex, sometimes with a legacy ".digits" suffix — validate
+// loosely but reject anything that isn't id-shaped so typos don't get stored.
+function extractRvFileId(input: string): string | null {
+  const s = input.trim();
+  if (!s) return null;
+  const m = s.match(/(?:download|songfile)\/([^/?#\s]+)/i);
+  const token = (m ? m[1] : s).trim();
+  return /^[0-9a-fA-F]+(\.[0-9]+)?$/.test(token) ? token : null;
+}
+
 // DTA rank value thresholds per instrument → tier (1-7)
 const TIER_THRESHOLDS: Record<string, number[]> = {
   rank_drum:        [0, 1, 133, 169, 208, 294, 349, 401],
@@ -46,11 +60,6 @@ const TIER_THRESHOLDS: Record<string, number[]> = {
   rank_real_keys:   [0, 1, 133, 169, 208, 294, 349, 401],
 };
 
-const TIER_LABELS = [
-  "No Part", "Warmup", "Apprentice", "Solid",
-  "Moderate", "Challenging", "Nightmare", "Impossible",
-];
-
 function rankToTier(field: string, value: number | null | undefined): number {
   if (value == null || value <= 0) return 0;
   const thresholds = TIER_THRESHOLDS[field] || TIER_THRESHOLDS.rank_drum;
@@ -61,73 +70,20 @@ function rankToTier(field: string, value: number | null | undefined): number {
   return tier;
 }
 
-function DifficultyRing({ tier }: { tier: number }) {
-  const size = 44;
-  const cx = size / 2;
-  const cy = size / 2;
-  const r = 17;
-  const segments = 7;
-  const gapDeg = 18;
-  const segmentAngle = (360 - segments * gapDeg) / segments;
-  const strokeW = 5;
-
-  const arcPath = (i: number) => {
-    const startDeg = -90 + i * (segmentAngle + gapDeg);
-    const endDeg = startDeg + segmentAngle;
-    const startRad = (startDeg * Math.PI) / 180;
-    const endRad = (endDeg * Math.PI) / 180;
-    const x1 = cx + r * Math.cos(startRad);
-    const y1 = cy + r * Math.sin(startRad);
-    const x2 = cx + r * Math.cos(endRad);
-    const y2 = cy + r * Math.sin(endRad);
-    return `M ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2}`;
-  };
-
-  return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-      {/* Empty track segments — visible dark slots */}
-      {Array.from({ length: segments }, (_, i) => (
-        <path
-          key={`bg-${i}`}
-          d={arcPath(i)}
-          fill="none"
-          stroke="#3a3a5c"
-          strokeWidth={strokeW}
-          strokeLinecap="round"
-        />
-      ))}
-      {/* Filled segments */}
-      {Array.from({ length: segments }, (_, i) => {
-        if (i >= tier) return null;
-        const isDevil = tier === 7;
-        return (
-          <path
-            key={`fg-${i}`}
-            d={arcPath(i)}
-            fill="none"
-            stroke={isDevil ? "#e94560" : "#e0e0e0"}
-            strokeWidth={strokeW}
-            strokeLinecap="round"
-          />
-        );
-      })}
-      {/* Center tier number */}
-      {tier > 0 && (
-        <text
-          x={cx}
-          y={cy + 1}
-          textAnchor="middle"
-          dominantBaseline="central"
-          fill={tier === 7 ? "#e94560" : "#e0e0e0"}
-          fontSize="13"
-          fontWeight="700"
-          fontFamily="sans-serif"
-        >
-          {tier}
-        </text>
-      )}
-    </svg>
-  );
+// Convert a stored difficulty value to a 0-7 tier for the ring, picking the
+// right scale. CON/DTA values are Rock Band ranks (0-400+) → threshold-mapped.
+// Folder (song.ini) values are natively 0-6 YARG tiers, so a small value IS the
+// tier — but some charts (usually RB3 conversions) leave rank-scale numbers in
+// song.ini, so a large folder value still gets threshold-mapped. The 7 cutoff
+// works because real YARG tiers never exceed 6 and real ranks are ~100+.
+function difficultyTier(
+  field: string,
+  value: number | null | undefined,
+  isFolder: boolean
+): number {
+  if (value == null || value <= 0) return 0;
+  if (isFolder && value <= 7) return Math.min(7, value);
+  return rankToTier(field, value);
 }
 
 function Field({
@@ -196,6 +152,12 @@ export function MetadataEditor({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // RhythmVerse link (kept in YARGLE's own DB, keyed by this song's path — not
+  // written into the chart, and separate from the metadata Save).
+  const [rvLinkInput, setRvLinkInput] = useState("");
+  const [rvLinkedId, setRvLinkedId] = useState<string | null>(null);
+  const [rvLinkBusy, setRvLinkBusy] = useState(false);
+  const [rvLinkError, setRvLinkError] = useState<string | null>(null);
   const m = details.metadata;
 
   const numOrNull = (val: string): number | null => {
@@ -204,11 +166,68 @@ export function MetadataEditor({
     return isNaN(n) ? null : n;
   };
 
+  // Load the current link whenever the selected song changes.
+  useEffect(() => {
+    setRvLinkInput("");
+    setRvLinkError(null);
+    setRvLinkedId(null);
+    invoke<string | null>("rv_linked_file_id", { path: details.path })
+      .then((id) => setRvLinkedId(id))
+      .catch(() => {});
+  }, [details.path]);
+
+  const saveRvLink = () => {
+    const fileId = extractRvFileId(rvLinkInput);
+    if (!fileId) {
+      setRvLinkError("Enter a RhythmVerse file ID or a rhythmverse.co link.");
+      return;
+    }
+    setRvLinkBusy(true);
+    setRvLinkError(null);
+    invoke("rv_link_song", {
+      fileId,
+      destPath: details.path,
+      songId: null,
+      artist: m.artist,
+      title: m.name,
+      fileName: null,
+      uploaded: null,
+    })
+      .then(() => {
+        setRvLinkedId(fileId);
+        setRvLinkInput("");
+      })
+      .catch((e) => setRvLinkError(String(e)))
+      .finally(() => setRvLinkBusy(false));
+  };
+
+  const clearRvLink = () => {
+    setRvLinkBusy(true);
+    setRvLinkError(null);
+    invoke("rv_unlink_song", { destPath: details.path })
+      .then(() => setRvLinkedId(null))
+      .catch((e) => setRvLinkError(String(e)))
+      .finally(() => setRvLinkBusy(false));
+  };
+
   return (
     <div className="metadata-editor">
       <div className="editor-header">
         <h2>{m.name || details.display_name || "Untitled"}</h2>
         <div className="editor-header-buttons">
+          <button
+            className="chart-btn"
+            onClick={() => {
+              invoke("reveal_in_explorer", { path: details.path }).catch(() => {});
+            }}
+            title={
+              details.is_folder
+                ? "Open this song's folder in File Explorer"
+                : "Show this file in File Explorer"
+            }
+          >
+            {"\u{1F4C1}"} Explorer
+          </button>
           <button
             className="chart-btn"
             onClick={() => setShowChart(true)}
@@ -363,7 +382,7 @@ export function MetadataEditor({
                 ["Pro Keys", "rank_real_keys"],
               ] as const).map(([label, field]) => {
                 const rawVal = (m as any)[field] as number | null | undefined;
-                const tier = rankToTier(field, rawVal);
+                const tier = difficultyTier(field, rawVal, details.is_folder);
                 return (
                   <div key={field} className="rank-field-with-ring">
                     <div className="rank-ring-container" title={TIER_LABELS[tier]}>
@@ -417,6 +436,51 @@ export function MetadataEditor({
               value={m.shortname}
               onChange={(v) => onUpdateMeta("shortname", v)}
             />
+            <div className="field rv-link-field">
+              <label>RhythmVerse Link</label>
+              {rvLinkedId ? (
+                <div className="rv-link-current">
+                  <span
+                    className="rv-link-badge"
+                    title="Linked to a RhythmVerse file — the browser shows this song as In library (exact) and can flag updates."
+                  >
+                    {"✓"} Linked: {rvLinkedId}
+                  </span>
+                  <button
+                    className="rv-link-clear"
+                    disabled={rvLinkBusy}
+                    onClick={clearRvLink}
+                  >
+                    Unlink
+                  </button>
+                </div>
+              ) : (
+                <div className="rv-link-current">
+                  <input
+                    type="text"
+                    placeholder="rhythmverse.co/download/… or file ID"
+                    value={rvLinkInput}
+                    onChange={(e) => setRvLinkInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") saveRvLink();
+                    }}
+                  />
+                  <button
+                    className="rv-link-save"
+                    disabled={rvLinkBusy || !rvLinkInput.trim()}
+                    onClick={saveRvLink}
+                  >
+                    Link
+                  </button>
+                </div>
+              )}
+              <span className="rv-link-hint">
+                Ties this song to its RhythmVerse entry by file ID, so the browser
+                marks it “In library” and can detect updates — handy for songs you
+                downloaded from an external host (Google Drive, etc.).
+              </span>
+              {rvLinkError && <span className="rv-link-error">{rvLinkError}</span>}
+            </div>
           </section>
 
           {details.validation_issues && details.validation_issues.length > 0 && (
@@ -445,7 +509,7 @@ export function MetadataEditor({
             artist={m.artist}
             albumName={m.album_name}
           />
-          <SongScores songName={m.name} />
+          <SongScores songName={m.name} artist={m.artist} />
         </div>
       </div>
 

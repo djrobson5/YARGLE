@@ -459,11 +459,19 @@ fn open_db(app: &AppHandle) -> Result<rusqlite::Connection, String> {
             title TEXT,
             file_name TEXT,
             dest_path TEXT,
-            downloaded_at TEXT
+            downloaded_at TEXT,
+            rv_upload_date TEXT
         )",
         [],
     )
     .map_err(|e| format!("SQLite init failed: {}", e))?;
+    // rv_upload_date = RhythmVerse's OWN upload timestamp for the version we
+    // hold, captured at download time. Update detection compares it against the
+    // site's *current* upload_date (same clock → no skew), instead of the old
+    // approach of comparing the site's clock against our local "downloaded_at"
+    // wall-clock, which false-positived on freshly-uploaded files. Added via
+    // ALTER for DBs created before this column existed (ignore "duplicate").
+    let _ = conn.execute("ALTER TABLE rv_downloads ADD COLUMN rv_upload_date TEXT", []);
     // rv_opened = off-site links the user opened in the browser (NOT "have";
     // we can't see whether the manual download succeeded — just a visited flag).
     conn.execute(
@@ -484,22 +492,28 @@ fn open_db(app: &AppHandle) -> Result<rusqlite::Connection, String> {
 pub struct RvDownloadRecord {
     pub file_id: String,
     pub downloaded_at: String,
+    // RhythmVerse's upload_date for the version we hold. Empty for records made
+    // before this was tracked (or editor links, which carry no RV data) — the
+    // UI treats an empty baseline as "don't flag updates" to avoid false
+    // positives, and backfills it the next time the song appears in a browse.
+    pub rv_upload_date: String,
 }
 
-/// RhythmVerse files downloaded via YARGLE, with when. The browse UI compares
-/// `downloaded_at` against the site's upload date to flag files that have
-/// been updated since they were fetched.
+/// RhythmVerse files held locally, each with the site's upload_date for the
+/// version we have. The browse UI compares that baseline against the site's
+/// *current* upload_date to flag charts revised since we grabbed them.
 #[tauri::command]
 pub fn rv_download_records(app: AppHandle) -> Result<Vec<RvDownloadRecord>, String> {
     let conn = open_db(&app)?;
     let mut stmt = conn
-        .prepare("SELECT file_id, downloaded_at FROM rv_downloads")
+        .prepare("SELECT file_id, downloaded_at, rv_upload_date FROM rv_downloads")
         .map_err(|e| e.to_string())?;
     let records = stmt
         .query_map([], |row| {
             Ok(RvDownloadRecord {
                 file_id: row.get(0)?,
                 downloaded_at: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                rv_upload_date: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
             })
         })
         .map_err(|e| e.to_string())?
@@ -557,6 +571,138 @@ pub fn rv_mark_opened(
         ],
     )
     .map_err(|e| format!("Failed to record opened: {}", e))?;
+    Ok(())
+}
+
+/// Mark a RhythmVerse file as present in the library WITHOUT YARGLE having
+/// fetched it — e.g. the user grabbed an off-site (Google Drive) download by
+/// hand and dropped it in. Keyed on the exact `file_id`, so the "In library"
+/// badge is precise no matter how the chart's own metadata is spelled (the
+/// artist/title heuristic can't be trusted for version tags, `&`/`and`,
+/// accents, etc.). `dest_path` is left empty — we don't know which folder it
+/// landed in — and `downloaded_at` = now, so the update check treats the user
+/// as holding the current version. Because `rv_download` never succeeds for
+/// external files, any `rv_downloads` row for one is necessarily a manual mark,
+/// which is what lets the UI offer an undo (see `rv_unmark_downloaded`).
+#[tauri::command]
+pub fn rv_mark_downloaded(
+    app: AppHandle,
+    file_id: String,
+    song_id: Option<i64>,
+    artist: Option<String>,
+    title: Option<String>,
+    file_name: Option<String>,
+    uploaded: Option<String>,
+) -> Result<(), String> {
+    record_download(
+        &app,
+        &file_id,
+        song_id,
+        &artist.unwrap_or_default(),
+        &title.unwrap_or_default(),
+        &file_name.unwrap_or_default(),
+        "", // destination unknown for a manual/external placement
+        &uploaded.unwrap_or_default(), // RV upload_date = version baseline
+    )
+}
+
+/// Undo a manual "Got it" mark. Only removes rows with no recorded destination
+/// path, so a real YARGLE-performed download (which always records where it
+/// extracted) can never be wiped by an accidental undo click.
+#[tauri::command]
+pub fn rv_unmark_downloaded(app: AppHandle, file_id: String) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    conn.execute(
+        "DELETE FROM rv_downloads WHERE file_id = ?1 AND (dest_path IS NULL OR dest_path = '')",
+        [file_id],
+    )
+    .map_err(|e| format!("Failed to unmark: {}", e))?;
+    Ok(())
+}
+
+/// Link an on-disk song (`dest_path`) to a RhythmVerse `file_id` from the
+/// editor. Unlike "Got it", this captures the real folder path, so the browser
+/// can both badge it "In library" (exact) and flag updates, and — for
+/// self-hosted files — replace-in-place on re-download. Enforces one link per
+/// path: any prior link for this folder is dropped first so re-linking replaces
+/// rather than leaving a stale "in library" row behind.
+#[tauri::command]
+pub fn rv_link_song(
+    app: AppHandle,
+    file_id: String,
+    dest_path: String,
+    song_id: Option<i64>,
+    artist: Option<String>,
+    title: Option<String>,
+    file_name: Option<String>,
+    uploaded: Option<String>,
+) -> Result<(), String> {
+    let file_id = file_id.trim().to_string();
+    if file_id.is_empty() {
+        return Err("Empty RhythmVerse file id".into());
+    }
+    let conn = open_db(&app)?;
+    if !dest_path.is_empty() {
+        conn.execute("DELETE FROM rv_downloads WHERE dest_path = ?1", [&dest_path])
+            .map_err(|e| format!("Failed to clear previous link: {}", e))?;
+    }
+    // The editor has no RV data, so `uploaded` is normally empty here — the
+    // browse UI backfills the version baseline the next time the song appears.
+    conn.execute(
+        "INSERT OR REPLACE INTO rv_downloads
+            (file_id, song_id, artist, title, file_name, dest_path, downloaded_at, rv_upload_date)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            file_id,
+            song_id,
+            artist.unwrap_or_default(),
+            title.unwrap_or_default(),
+            file_name.unwrap_or_default(),
+            dest_path,
+            chrono::Utc::now().to_rfc3339(),
+            uploaded.unwrap_or_default()
+        ],
+    )
+    .map_err(|e| format!("Failed to link: {}", e))?;
+    Ok(())
+}
+
+/// Remove the RhythmVerse link for an on-disk song (by its folder/file path).
+#[tauri::command]
+pub fn rv_unlink_song(app: AppHandle, dest_path: String) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    conn.execute("DELETE FROM rv_downloads WHERE dest_path = ?1", [dest_path])
+        .map_err(|e| format!("Failed to unlink: {}", e))?;
+    Ok(())
+}
+
+/// The RhythmVerse file_id an on-disk song is linked to, if any — so the editor
+/// can show the current link for the selected song.
+#[tauri::command]
+pub fn rv_linked_file_id(app: AppHandle, path: String) -> Result<Option<String>, String> {
+    let conn = open_db(&app)?;
+    match conn.query_row(
+        "SELECT file_id FROM rv_downloads WHERE dest_path = ?1 LIMIT 1",
+        [path],
+        |row| row.get::<_, String>(0),
+    ) {
+        Ok(v) => Ok(Some(v)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Refresh a download record's timestamp to now, keeping its path. Used when
+/// the user re-opens an external file's link to grab an update: it clears the
+/// "Update" flag without wiping the linked folder path (unlike a fresh mark).
+#[tauri::command]
+pub fn rv_touch_downloaded(app: AppHandle, file_id: String) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    conn.execute(
+        "UPDATE rv_downloads SET downloaded_at = ?2 WHERE file_id = ?1",
+        rusqlite::params![file_id, chrono::Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| format!("Failed to update timestamp: {}", e))?;
     Ok(())
 }
 
@@ -738,10 +884,12 @@ pub async fn rv_download(
     artist: Option<String>,
     title: Option<String>,
     file_name: Option<String>,
+    uploaded: Option<String>,
 ) -> Result<RvDownloadResult, String> {
     let artist = artist.unwrap_or_default();
     let title = title.unwrap_or_default();
     let file_name = file_name.unwrap_or_default();
+    let uploaded = uploaded.unwrap_or_default();
 
     let dest = PathBuf::from(&dest_folder);
     if !dest.is_dir() {
@@ -803,6 +951,7 @@ pub async fn rv_download(
         &title,
         &file_name,
         extracted_to.to_string_lossy().as_ref(),
+        &uploaded,
     );
 
     emit_progress(&app, &file_id, "done", total, total, "Done");
@@ -822,12 +971,13 @@ fn record_download(
     title: &str,
     file_name: &str,
     dest: &str,
+    rv_upload_date: &str,
 ) -> Result<(), String> {
     let conn = open_db(app)?;
     conn.execute(
         "INSERT OR REPLACE INTO rv_downloads
-            (file_id, song_id, artist, title, file_name, dest_path, downloaded_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (file_id, song_id, artist, title, file_name, dest_path, downloaded_at, rv_upload_date)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         rusqlite::params![
             file_id,
             song_id,
@@ -835,10 +985,32 @@ fn record_download(
             title,
             file_name,
             dest,
-            chrono::Utc::now().to_rfc3339()
+            chrono::Utc::now().to_rfc3339(),
+            rv_upload_date
         ],
     )
     .map_err(|e| format!("Failed to record download: {}", e))?;
+    Ok(())
+}
+
+/// Backfill the version baseline for a record that has none — used by the
+/// browse UI when it encounters a linked/held song (e.g. an editor link, which
+/// carries no RV data) whose `rv_upload_date` is empty. Records the site's
+/// current upload_date as "the version you have" so future revisions are
+/// detectable. Only fills an EMPTY baseline, so it never clobbers a real one.
+#[tauri::command]
+pub fn rv_set_upload_baseline(
+    app: AppHandle,
+    file_id: String,
+    uploaded: String,
+) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    conn.execute(
+        "UPDATE rv_downloads SET rv_upload_date = ?2
+         WHERE file_id = ?1 AND (rv_upload_date IS NULL OR rv_upload_date = '')",
+        rusqlite::params![file_id, uploaded],
+    )
+    .map_err(|e| format!("Failed to set baseline: {}", e))?;
     Ok(())
 }
 

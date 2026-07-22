@@ -1,7 +1,8 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { DifficultyRing, TIER_LABELS } from "./DifficultyRing";
 import type { RvBrowseResult, RvDownloadRecord, RvSongFile, SongSummary } from "../types";
 
 interface RhythmVerseModalProps {
@@ -47,6 +48,40 @@ function isCharted(tier: number | null): boolean {
 
 function norm(s: string): string {
   return (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+// Copy text to the clipboard, falling back to a hidden textarea for webviews
+// where navigator.clipboard is unavailable or blocked.
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* fall through to the execCommand fallback */
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+// Last path segment of a file/folder path (handles both \ and / separators).
+function baseName(p: string): string {
+  if (!p) return "";
+  const parts = p.split(/[\\/]/);
+  return parts[parts.length - 1] || "";
 }
 
 function formatBytes(n: number | null): string {
@@ -104,6 +139,48 @@ function formatDate(s: string): string {
   });
 }
 
+// Friendly names for RhythmVerse's game-format codes (used as the icon tooltip
+// / text fallback). Codes come back lowercase from the API.
+const GAME_FORMAT_LABELS: Record<string, string> = {
+  ch: "Clone Hero",
+  rv: "RhythmVerse",
+  yarg: "YARG",
+  gh: "Guitar Hero",
+  ps: "Phase Shift",
+  rb2: "Rock Band 2",
+  rb3: "Rock Band 3",
+  rb3xbox: "Rock Band 3 (Xbox 360)",
+  rb3ps3: "Rock Band 3 (PS3)",
+  rb3wii: "Rock Band 3 (Wii)",
+  tbrb: "The Beatles: Rock Band",
+  wtde: "GH: Warriors of Rock — Definitive Edition",
+};
+
+// Show the game format as its icon (Clone Hero, Rock Band, YARG, …), bundled
+// under public/icons/games/. Codes with no bundled icon fall back to the
+// original text badge via onError.
+function GameFormatBadge({ code }: { code: string }) {
+  const [failed, setFailed] = useState(false);
+  const label = GAME_FORMAT_LABELS[code.toLowerCase()] || code.toUpperCase();
+  if (failed) {
+    return (
+      <span className="rv-format" title={label}>
+        {code}
+      </span>
+    );
+  }
+  return (
+    <img
+      className="rv-format-icon"
+      src={`/icons/games/${code.toLowerCase()}.png`}
+      alt={label}
+      title={label}
+      loading="lazy"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 export function RhythmVerseModal({
   librarySongs,
   libraryFolder,
@@ -120,9 +197,11 @@ export function RhythmVerseModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // file_id -> downloaded_at for files fetched via YARGLE. Gives the exact
-  // "in library" match plus update detection against the site's upload date.
-  const [downloads, setDownloads] = useState<Map<string, string>>(new Map());
+  // file_id -> download record for files held locally. Gives the exact "in
+  // library" match plus the version baseline (rv_upload_date) for updates.
+  const [downloads, setDownloads] = useState<Map<string, RvDownloadRecord>>(
+    new Map()
+  );
   // file_ids whose off-site link the user has opened in the browser
   const [openedIds, setOpenedIds] = useState<Set<string>>(new Set());
   // the single in-flight download, if any (downloads run one at a time)
@@ -131,12 +210,14 @@ export function RhythmVerseModal({
     phase: string;
     pct: number;
   } | null>(null);
+  // true while a library rescan (triggered by the Refresh button) is in flight
+  const [libRefreshing, setLibRefreshing] = useState(false);
+  // file_id whose link was just copied, for a transient "Copied!" indicator
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const refreshDownloads = useCallback(() => {
     invoke<RvDownloadRecord[]>("rv_download_records")
-      .then((recs) =>
-        setDownloads(new Map(recs.map((r) => [r.file_id, r.downloaded_at])))
-      )
+      .then((recs) => setDownloads(new Map(recs.map((r) => [r.file_id, r]))))
       .catch(() => {});
   }, []);
 
@@ -146,6 +227,19 @@ export function RhythmVerseModal({
       .then((ids) => setOpenedIds(new Set(ids)))
       .catch(() => {});
   }, [refreshDownloads]);
+
+  // Rescan the library so files added manually (e.g. after an "Open ↗"
+  // external download) get picked up without restarting the app.
+  const handleRefreshLibrary = useCallback(() => {
+    if (!onLibraryChanged) return;
+    setLibRefreshing(true);
+    onLibraryChanged();
+  }, [onLibraryChanged]);
+
+  // Clear the refreshing flag once the parent hands us a new library snapshot.
+  useEffect(() => {
+    setLibRefreshing(false);
+  }, [librarySongs]);
 
   // Track progress of the active download.
   useEffect(() => {
@@ -167,6 +261,24 @@ export function RhythmVerseModal({
     };
   }, []);
 
+  // Copy this song's RhythmVerse page link so it can be pasted into the
+  // editor's "RhythmVerse Link" field — the only way to grab the link for a
+  // song that's already in the library (its Download/Open button is gone).
+  const handleCopyLink = useCallback((song: RvSongFile) => {
+    const link = song.detail_url || song.download_url;
+    copyText(link).then((ok) => {
+      if (ok) {
+        setCopiedId(song.file_id);
+        window.setTimeout(
+          () => setCopiedId((c) => (c === song.file_id ? null : c)),
+          1500
+        );
+      } else {
+        setError("Couldn't copy the link to the clipboard.");
+      }
+    });
+  }, []);
+
   const handleOpenExternal = useCallback((song: RvSongFile) => {
     invoke("rv_open_external", { url: song.external_url })
       .then(() => {
@@ -180,6 +292,54 @@ export function RhythmVerseModal({
       })
       .catch((e) => setError(String(e)));
   }, []);
+
+  // "Got it": the user confirms they've manually placed this (usually off-site)
+  // download in their library. Records the exact file_id so the badge is precise
+  // regardless of how the chart's own metadata is spelled.
+  const handleMarkDownloaded = useCallback(
+    (song: RvSongFile) => {
+      invoke("rv_mark_downloaded", {
+        fileId: song.file_id,
+        songId: song.song_id,
+        artist: song.artist,
+        title: song.title,
+        fileName: song.file_name,
+        uploaded: song.uploaded,
+      })
+        .then(() => refreshDownloads())
+        .catch((e) => setError(String(e)));
+    },
+    [refreshDownloads]
+  );
+
+  // Update path for an EXTERNAL file: YARGLE can't scrape the off-site host, so
+  // re-open the link for a manual re-download and optimistically refresh the
+  // timestamp (mirrors the "Opened" flow) so the Update flag clears. Preserves
+  // the linked folder path (touch, not re-mark).
+  const handleUpdateExternal = useCallback(
+    (song: RvSongFile) => {
+      invoke("rv_open_external", { url: song.external_url })
+        .then(() => {
+          setOpenedIds((prev) => new Set(prev).add(song.file_id));
+          invoke("rv_touch_downloaded", { fileId: song.file_id })
+            .then(() => refreshDownloads())
+            .catch(() => {});
+        })
+        .catch((e) => setError(String(e)));
+    },
+    [refreshDownloads]
+  );
+
+  // Undo a manual "Got it" mark (backend only deletes path-less manual marks,
+  // never a real YARGLE download record).
+  const handleUnmarkDownloaded = useCallback(
+    (song: RvSongFile) => {
+      invoke("rv_unmark_downloaded", { fileId: song.file_id })
+        .then(() => refreshDownloads())
+        .catch((e) => setError(String(e)));
+    },
+    [refreshDownloads]
+  );
 
   const handleDownload = useCallback(
     async (song: RvSongFile) => {
@@ -200,6 +360,7 @@ export function RhythmVerseModal({
           artist: song.artist,
           title: song.title,
           fileName: song.file_name,
+          uploaded: song.uploaded,
         });
         refreshDownloads();
         onLibraryChanged?.();
@@ -228,6 +389,14 @@ export function RhythmVerseModal({
       if (idx > 0 && s.title_name) {
         artistTitle.add(norm(dn.slice(0, idx) + s.title_name));
       }
+      // Also index the folder/file basename. The chart's song.ini `name` is
+      // often trimmed (e.g. drops "(LIVE at Reading Festival)") while the
+      // download folder keeps RhythmVerse's full title — matching against it
+      // catches externally-downloaded songs the display_name would miss. This
+      // stays a full exact-string match (parenthetical preserved), so it does
+      // NOT re-introduce live-vs-studio false positives.
+      const base = baseName(s.path);
+      if (base) artistTitle.add(norm(base));
     }
     return { artistTitle };
   }, [librarySongs]);
@@ -236,27 +405,62 @@ export function RhythmVerseModal({
     (song: RvSongFile): boolean => {
       if (downloads.has(song.file_id)) return true; // exact: downloaded via YARGLE
       if (song.artist && song.title) {
-        return libIndex.artistTitle.has(norm(song.artist + song.title));
+        // Test both orderings: library display names / folders are usually
+        // "Artist - Title" but some (and many CON headers) are "Title - Artist".
+        return (
+          libIndex.artistTitle.has(norm(song.artist + song.title)) ||
+          libIndex.artistTitle.has(norm(song.title + song.artist))
+        );
       }
       return false;
     },
     [libIndex, downloads]
   );
 
-  // True when we downloaded this exact file and the site's upload date is
-  // newer than our download (1 min slack against clock skew). Only knowable
-  // for files fetched via YARGLE — heuristic matches carry no file linkage.
+  // True when the site's CURRENT upload_date is newer than the upload_date of
+  // the version we hold. Both come from RhythmVerse's own clock, so there's no
+  // cross-clock skew (the old code compared the site's clock against our local
+  // "downloaded_at", which false-positived on freshly-uploaded files). An empty
+  // baseline (unknown version) never flags — it gets backfilled below instead.
   const needsUpdate = useCallback(
     (song: RvSongFile): boolean => {
-      const dl = downloads.get(song.file_id);
-      if (!dl) return false;
-      const uploaded = parseRvDate(song.uploaded);
-      const downloaded = Date.parse(dl);
-      if (uploaded == null || isNaN(downloaded)) return false;
-      return uploaded > downloaded + 60_000;
+      const rec = downloads.get(song.file_id);
+      if (!rec || !rec.rv_upload_date) return false;
+      const held = parseRvDate(rec.rv_upload_date);
+      const current = parseRvDate(song.uploaded);
+      if (held == null || current == null) return false;
+      return current > held + 1000; // strictly newer (1s guard on formatting)
     },
     [downloads]
   );
+
+  // Backfill the version baseline for held songs that don't have one yet (e.g.
+  // editor links, which carry no RV data): record the site's current
+  // upload_date as "the version you have". Runs once per file_id per session,
+  // and only touches empty baselines, so it never masks a real update.
+  const backfilledRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!result) return;
+    const toFix = result.songs.filter((s) => {
+      const rec = downloads.get(s.file_id);
+      return (
+        rec &&
+        !rec.rv_upload_date &&
+        !!s.uploaded &&
+        !backfilledRef.current.has(s.file_id)
+      );
+    });
+    if (toFix.length === 0) return;
+    Promise.all(
+      toFix.map((s) => {
+        backfilledRef.current.add(s.file_id);
+        return invoke("rv_set_upload_baseline", {
+          fileId: s.file_id,
+          uploaded: s.uploaded,
+        }).catch(() => {});
+      })
+    ).then(() => refreshDownloads());
+  }, [result, downloads, refreshDownloads]);
 
   useEffect(() => {
     let cancelled = false;
@@ -345,6 +549,16 @@ export function RhythmVerseModal({
           >
             {sortOrder === "DESC" ? "↓" : "↑"}
           </button>
+          {onLibraryChanged && (
+            <button
+              className="rv-order-btn"
+              disabled={libRefreshing}
+              title="Rescan your library — use after manually adding files from an external (↗) download so they show as In library"
+              onClick={handleRefreshLibrary}
+            >
+              {libRefreshing ? "…" : "↻"}
+            </button>
+          )}
         </div>
 
         <div className="rv-status-bar">
@@ -402,35 +616,52 @@ export function RhythmVerseModal({
                     )}
                   </div>
                   <div className="rv-info">
-                    <div className="rv-title">{song.title || song.file_name}</div>
+                    <div className="rv-title">
+                      <a
+                        className="rv-title-link"
+                        href={song.detail_url || song.download_url}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleCopyLink(song);
+                        }}
+                        title="Click to copy this song's RhythmVerse link — paste it into the editor's RhythmVerse Link field"
+                      >
+                        {song.title || song.file_name}
+                      </a>
+                      {copiedId === song.file_id && (
+                        <span className="rv-copied">{"✓"} Copied</span>
+                      )}
+                    </div>
                     <div className="rv-artist">{song.artist || "Unknown artist"}</div>
                     {meta && <div className="rv-meta">{meta}</div>}
                     {byline && <div className="rv-byline">{byline}</div>}
                     <div className="rv-instruments">
                       {INSTRUMENTS.map((inst) => {
-                        const tier = song[inst.key];
-                        const on = isCharted(tier);
+                        // diff_* are already tiers (0-7), not raw ranks, so
+                        // they feed the ring directly (clamped for safety).
+                        const raw = song[inst.key];
+                        const on = isCharted(raw);
+                        const tier = on ? Math.min(7, raw as number) : 0;
                         return (
-                          <span
+                          <div
                             key={inst.key}
-                            className={`rv-inst ${on ? "rv-inst-on" : "rv-inst-off"}`}
+                            className={`rv-inst-ring ${on ? "" : "rv-inst-ring-off"}`}
                             title={
                               on
-                                ? `${inst.name}: difficulty ${tier}`
+                                ? `${inst.name}: ${TIER_LABELS[tier]} (${tier})`
                                 : `${inst.name}: not charted`
                             }
                           >
-                            {inst.label}
-                          </span>
+                            <DifficultyRing tier={tier} size={30} />
+                            <span className="rv-inst-letter">{inst.label}</span>
+                          </div>
                         );
                       })}
                     </div>
                   </div>
                   <div className="rv-side">
                     <div className="rv-stats">
-                      {song.gameformat && (
-                        <span className="rv-format">{song.gameformat}</span>
-                      )}
+                      {song.gameformat && <GameFormatBadge code={song.gameformat} />}
                       {isExternal && (
                         <span className="rv-ext-host" title={`Hosted on ${extHost}`}>
                           ↗ {extHost}
@@ -465,32 +696,64 @@ export function RhythmVerseModal({
                         </span>
                       </div>
                     ) : hasUpdate ? (
-                      <button
-                        className="rv-update-btn"
-                        disabled={!!activeDownload}
-                        onClick={() => handleDownload(song)}
-                        title={`Updated on RhythmVerse (${formatDate(song.uploaded)}) since you downloaded it — click to re-download and replace`}
-                      >
-                        Update {"⟳"}
-                      </button>
+                      isExternal ? (
+                        <button
+                          className="rv-update-btn"
+                          onClick={() => handleUpdateExternal(song)}
+                          title={`Updated on RhythmVerse (${formatDate(song.uploaded)}) since you got it — re-open ${extHost} to download the new version`}
+                        >
+                          Update {"↗"}
+                        </button>
+                      ) : (
+                        <button
+                          className="rv-update-btn"
+                          disabled={!!activeDownload}
+                          onClick={() => handleDownload(song)}
+                          title={`Updated on RhythmVerse (${formatDate(song.uploaded)}) since you downloaded it — click to re-download and replace`}
+                        >
+                          Update {"⟳"}
+                        </button>
+                      )
                     ) : have ? (
-                      <span className="rv-in-lib" title="Already in your library">
-                        {"✓"} In library
-                      </span>
+                      // A manual "Got it" mark on an external file is the only
+                      // way an external file_id lands in the downloads DB, so
+                      // that combination is safe to expose as an undo.
+                      isExternal && downloads.has(song.file_id) ? (
+                        <button
+                          className="rv-in-lib rv-in-lib-manual"
+                          onClick={() => handleUnmarkDownloaded(song)}
+                          title="Marked as in your library — click to undo"
+                        >
+                          {"✓"} In library
+                        </button>
+                      ) : (
+                        <span className="rv-in-lib" title="Already in your library">
+                          {"✓"} In library
+                        </span>
+                      )
                     ) : isExternal ? (
-                      <button
-                        className={`rv-ext-btn${
-                          openedIds.has(song.file_id) ? " rv-ext-opened" : ""
-                        }`}
-                        onClick={() => handleOpenExternal(song)}
-                        title={
-                          openedIds.has(song.file_id)
-                            ? `Opened on ${extHost} before — click to open again`
-                            : `Hosted on ${extHost} — opens in your browser to download manually`
-                        }
-                      >
-                        {openedIds.has(song.file_id) ? "Opened ↗" : "Open ↗"}
-                      </button>
+                      <div className="rv-ext-actions">
+                        <button
+                          className={`rv-ext-btn${
+                            openedIds.has(song.file_id) ? " rv-ext-opened" : ""
+                          }`}
+                          onClick={() => handleOpenExternal(song)}
+                          title={
+                            openedIds.has(song.file_id)
+                              ? `Opened on ${extHost} before — click to open again`
+                              : `Hosted on ${extHost} — opens in your browser to download manually`
+                          }
+                        >
+                          {openedIds.has(song.file_id) ? "Opened ↗" : "Open ↗"}
+                        </button>
+                        <button
+                          className="rv-gotit-btn"
+                          onClick={() => handleMarkDownloaded(song)}
+                          title="Already grabbed this and added it to your library? Mark it as In library (exact match by file ID)"
+                        >
+                          {"✓"} Got it
+                        </button>
+                      </div>
                     ) : (
                       <button
                         className="rv-dl-btn"

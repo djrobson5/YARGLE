@@ -54,6 +54,9 @@ export interface SongDetails {
   raw_dta: string;
   dta_file_size: number;
   validation_issues: ValidationIssue[];
+  // True for unpacked song folders (song.ini native 0-6 tiers), false for
+  // CON/STFS packages (Rock Band rank scale). Drives difficulty interpretation.
+  is_folder: boolean;
 }
 
 export interface SongValidationResult {
@@ -177,6 +180,10 @@ export interface RvDownloadResult {
 export interface RvDownloadRecord {
   file_id: string;
   downloaded_at: string;
+  // RhythmVerse's upload_date for the version held locally (the update baseline).
+  // Empty when unknown (pre-tracking records / editor links) — treated as
+  // "don't flag updates" and backfilled on the next browse.
+  rv_upload_date: string;
 }
 
 export interface UpdateInfo {

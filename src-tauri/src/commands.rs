@@ -367,6 +367,7 @@ pub fn get_song_details(path: String) -> Result<SongDetails, String> {
             raw_dta: content,
             dta_file_size: ini_size,
             validation_issues,
+            is_folder: true,
         });
     }
 
@@ -425,6 +426,7 @@ pub fn get_song_details(path: String) -> Result<SongDetails, String> {
         raw_dta: raw_dta.clone(),
         dta_file_size: dta_entry.file_size,
         validation_issues,
+        is_folder: false,
     })
 }
 
@@ -744,110 +746,260 @@ pub struct SongScore {
     pub band_score: i64,
     pub band_stars: i64,
     pub speed: f64,
+    // Which YARG build this play is from: "Stable", "Nightly", or (after a
+    // score sync duplicates it into both) "Stable + Nightly".
+    pub build: String,
+    // How many distinct plays this best-score row was chosen from (>=1), for a
+    // "best of N" hint after collapsing to one row per instrument+difficulty.
+    pub attempts: i64,
 }
 
+// Values match YARG.Core's `Instrument` enum (YARC-Official/YARG.Core,
+// InstrumentEnums.cs) — reserved in gaps of 10, so most IDs are non-contiguous.
 fn instrument_name(id: i64) -> &'static str {
     match id {
         0 => "Guitar",
         1 => "Bass",
-        2 => "Drums",
-        3 => "Vocals",
+        2 => "Rhythm",
+        3 => "Co-op Guitar",
         4 => "Keys",
-        5 => "Real Guitar",
-        6 => "Real Bass",
-        7 => "Real Drums",
-        8 => "Real Keys",
-        9 => "Harmony",
+        10 => "Guitar (6-fret)",
+        11 => "Bass (6-fret)",
+        12 => "Rhythm (6-fret)",
+        13 => "Co-op Guitar (6-fret)",
+        20 => "Drums",
+        21 => "Pro Drums",
+        22 => "5-Lane Drums",
+        23 => "Elite Drums",
+        30 => "Pro Guitar (17)",
+        31 => "Pro Guitar (22)",
+        32 => "Pro Bass (17)",
+        33 => "Pro Bass (22)",
+        34 => "Pro Keys",
+        40 => "Vocals",
+        41 => "Harmony",
+        255 => "Band",
         _ => "Unknown",
     }
 }
 
+// Values match YARG.Core's `Difficulty` enum (starts at Beginner=0). YARGLE
+// previously started at Easy=0, mislabeling every tier by one (e.g. Expert=4
+// showed as "Expert+").
 fn difficulty_name(id: i64) -> &'static str {
     match id {
-        0 => "Easy",
-        1 => "Medium",
-        2 => "Hard",
-        3 => "Expert",
-        4 => "Expert+",
+        0 => "Beginner",
+        1 => "Easy",
+        2 => "Medium",
+        3 => "Hard",
+        4 => "Expert",
+        5 => "Expert+",
         _ => "Unknown",
     }
 }
 
-/// Find the most recently modified scores.db between stable and nightly
-fn most_recent_scores_db() -> Option<PathBuf> {
-    let stable = yarg_scores_path("release").filter(|p| p.exists());
-    let nightly = yarg_scores_path("nightly").filter(|p| p.exists());
+/// Normalize a title/artist for tolerant matching: lowercase, keep only
+/// alphanumerics. Absorbs case, whitespace, and punctuation differences (the
+/// usual reason a chart's title in YARG's DB doesn't byte-match YARGLE's).
+fn norm_title(s: &str) -> String {
+    s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
+}
 
-    match (stable, nightly) {
-        (Some(s), Some(n)) => {
-            let s_mod = fs::metadata(&s).and_then(|m| m.modified()).ok();
-            let n_mod = fs::metadata(&n).and_then(|m| m.modified()).ok();
-            match (s_mod, n_mod) {
-                (Some(st), Some(nt)) if nt > st => Some(n),
-                _ => Some(s),
-            }
+/// Read all plays from one scores.db whose normalized title matches, tagging
+/// each with the build label. Returns `(score, normalized_artist)` so the caller
+/// can prefer artist matches without letting a differing artist (accents,
+/// `&`/`and`) drop a real score. Returns empty on any DB/query error.
+fn read_scores(db_path: &Path, build: &str, title_norm: &str) -> Vec<(SongScore, String)> {
+    let conn = match rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT g.Date, p2.Name, ps.Instrument, ps.Difficulty,
+                ps.Score, ps.Stars, ps.Percent, ps.IsFc,
+                ps.NotesHit, ps.NotesMissed, g.BandScore, g.BandStars, g.SongSpeed,
+                g.SongName, g.SongArtist
+         FROM GameRecords g
+         JOIN PlayerScores ps ON ps.GameRecordId = g.Id
+         LEFT JOIN Players p2 ON ps.PlayerId = p2.Id
+         ORDER BY ps.Score DESC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+
+    let rows = stmt.query_map([], |row| {
+        let date_ticks: i64 = row.get(0)?;
+        // .NET ticks -> Unix seconds: ticks are 100ns intervals since 0001-01-01
+        let unix_secs = (date_ticks - 621355968000000000) / 10_000_000;
+        let date_str = chrono::DateTime::from_timestamp(unix_secs, 0)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
+            .unwrap_or_default();
+        let score = SongScore {
+            date: date_str,
+            player_name: row.get::<_, String>(1).unwrap_or_default(),
+            instrument: instrument_name(row.get::<_, i64>(2)?).to_string(),
+            difficulty: difficulty_name(row.get::<_, i64>(3)?).to_string(),
+            score: row.get(4)?,
+            stars: row.get(5)?,
+            percent: row.get::<_, f64>(6).unwrap_or(0.0),
+            is_fc: row.get::<_, i64>(7).unwrap_or(0) != 0,
+            notes_hit: row.get::<_, i64>(8).unwrap_or(0),
+            notes_missed: row.get::<_, i64>(9).unwrap_or(0),
+            band_score: row.get::<_, i64>(10).unwrap_or(0),
+            band_stars: row.get::<_, i64>(11).unwrap_or(0),
+            speed: row.get::<_, f64>(12).unwrap_or(1.0),
+            build: build.to_string(),
+            attempts: 0, // set during the collapse below
+        };
+        let song_name = row.get::<_, String>(13).unwrap_or_default();
+        let song_artist = row.get::<_, String>(14).unwrap_or_default();
+        Ok((score, song_name, song_artist))
+    });
+    let rows = match rows {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut out = Vec::new();
+    for (score, song_name, song_artist) in rows.flatten() {
+        if norm_title(&song_name) != title_norm {
+            continue;
         }
-        (Some(s), None) => Some(s),
-        (None, Some(n)) => Some(n),
-        (None, None) => None,
+        out.push((score, norm_title(&song_artist)));
     }
+    out
 }
 
 #[tauri::command]
-pub fn get_song_scores(song_name: String) -> Result<Vec<SongScore>, String> {
-    let db_path = match most_recent_scores_db() {
-        Some(p) => p,
-        None => return Ok(vec![]),
-    };
+pub fn get_song_scores(song_name: String, artist: Option<String>) -> Result<Vec<SongScore>, String> {
+    let title_norm = norm_title(&song_name);
+    if title_norm.is_empty() {
+        return Ok(vec![]);
+    }
+    let artist_norm = norm_title(&artist.unwrap_or_default());
 
-    let conn = rusqlite::Connection::open_with_flags(
-        &db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|e| format!("SQLite error: {}", e))?;
+    // Read BOTH builds so a play on either shows up (the user plays on both and
+    // wants to see, e.g., a gold star earned on the other build).
+    let mut all: Vec<(SongScore, String)> = Vec::new();
+    for (variant, label) in [("release", "Stable"), ("nightly", "Nightly")] {
+        if let Some(db) = yarg_scores_path(variant).filter(|p| p.exists()) {
+            all.extend(read_scores(&db, label, &title_norm));
+        }
+    }
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT g.Date, p2.Name, ps.Instrument, ps.Difficulty,
-                    ps.Score, ps.Stars, ps.Percent, ps.IsFc,
-                    ps.NotesHit, ps.NotesMissed, g.BandScore, g.BandStars, g.SongSpeed
-             FROM GameRecords g
-             JOIN PlayerScores ps ON ps.GameRecordId = g.Id
-             LEFT JOIN Players p2 ON ps.PlayerId = p2.Id
-             WHERE g.SongName = ?1
-             ORDER BY ps.Score DESC",
-        )
-        .map_err(|e| e.to_string())?;
+    // Artist is a PREFERENCE, not a gate: if some title matches also match the
+    // artist, keep only those (disambiguates distinct same-titled songs, e.g.
+    // two "My Way"s); otherwise keep all title matches, so a differing artist
+    // spelling (accents, "&"/"and") never drops a real score.
+    let use_artist = !artist_norm.is_empty() && all.iter().any(|(_, a)| *a == artist_norm);
+    let filtered = all
+        .into_iter()
+        .filter(|(_, a)| !use_artist || *a == artist_norm)
+        .map(|(s, _)| s);
 
-    let rows = stmt
-        .query_map([&song_name], |row| {
-            let date_ticks: i64 = row.get(0)?;
-            // .NET ticks -> Unix seconds: ticks are 100ns intervals since 0001-01-01
-            let unix_secs = (date_ticks - 621355968000000000) / 10_000_000;
-            let date_str = chrono::DateTime::from_timestamp(unix_secs, 0)
-                .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-                .unwrap_or_default();
+    // Collapse a play present in both DBs (e.g. after a score sync) into one row.
+    let mut combined: Vec<SongScore> = Vec::new();
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for s in filtered {
+        let key = format!(
+            "{}|{}|{}|{}|{}",
+            s.date, s.player_name, s.instrument, s.difficulty, s.score
+        );
+        if let Some(&i) = index.get(&key) {
+            if combined[i].build != s.build && combined[i].build != "Stable + Nightly" {
+                combined[i].build = "Stable + Nightly".to_string();
+            }
+        } else {
+            index.insert(key, combined.len());
+            combined.push(s);
+        }
+    }
 
-            Ok(SongScore {
-                date: date_str,
-                player_name: row.get::<_, String>(1).unwrap_or_default(),
-                instrument: instrument_name(row.get::<_, i64>(2)?).to_string(),
-                difficulty: difficulty_name(row.get::<_, i64>(3)?).to_string(),
-                score: row.get(4)?,
-                stars: row.get(5)?,
-                percent: row.get::<_, f64>(6).unwrap_or(0.0),
-                is_fc: row.get::<_, i64>(7).unwrap_or(0) != 0,
-                notes_hit: row.get::<_, i64>(8).unwrap_or(0),
-                notes_missed: row.get::<_, i64>(9).unwrap_or(0),
-                band_score: row.get::<_, i64>(10).unwrap_or(0),
-                band_stars: row.get::<_, i64>(11).unwrap_or(0),
-                speed: row.get::<_, f64>(12).unwrap_or(1.0),
-            })
-        })
-        .map_err(|e| e.to_string())?;
+    // Collapse to the single best (highest-score) play per instrument+difficulty,
+    // counting how many plays fed each group for a "best of N" hint. Higher score
+    // implies more stars (stars derive from score), so this keeps the gold-star run.
+    let mut best_idx: std::collections::HashMap<(String, String), usize> = std::collections::HashMap::new();
+    let mut collapsed: Vec<SongScore> = Vec::new();
+    for mut s in combined {
+        let key = (s.instrument.clone(), s.difficulty.clone());
+        if let Some(&i) = best_idx.get(&key) {
+            let attempts = collapsed[i].attempts + 1;
+            if s.score > collapsed[i].score {
+                s.attempts = attempts;
+                collapsed[i] = s;
+            } else {
+                collapsed[i].attempts = attempts;
+            }
+        } else {
+            s.attempts = 1;
+            best_idx.insert(key, collapsed.len());
+            collapsed.push(s);
+        }
+    }
 
-    let scores: Vec<SongScore> = rows.filter_map(|r| r.ok()).collect();
-    Ok(scores)
+    collapsed.sort_by(|a, b| b.score.cmp(&a.score));
+    Ok(collapsed)
+}
+
+/// Reveal a song in the OS file manager. For an unpacked folder song the folder
+/// itself is opened; for a CON/STFS file the containing folder is opened with the
+/// file selected. Spawns the manager and returns immediately (Explorer notably
+/// exits non-zero even on success, so we never wait on it).
+#[tauri::command]
+pub fn reveal_in_explorer(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if !p.exists() {
+        return Err(format!("Path no longer exists: {}", path));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut cmd = std::process::Command::new("explorer");
+        if p.is_dir() {
+            cmd.arg(&path);
+        } else {
+            // raw_arg avoids Rust's auto-quoting so `/select,"<path>"` reaches
+            // Explorer intact (paths with spaces otherwise break the switch).
+            cmd.raw_arg(format!("/select,\"{}\"", path));
+        }
+        cmd.spawn()
+            .map_err(|e| format!("Failed to open Explorer: {}", e))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut cmd = std::process::Command::new("open");
+        if p.is_dir() {
+            cmd.arg(&path);
+        } else {
+            cmd.arg("-R").arg(&path);
+        }
+        cmd.spawn()
+            .map_err(|e| format!("Failed to open Finder: {}", e))?;
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // No portable "select"; open the folder (or the file's parent).
+        let target = if p.is_dir() {
+            path.clone()
+        } else {
+            p.parent()
+                .map(|d| d.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.clone())
+        };
+        std::process::Command::new("xdg-open")
+            .arg(&target)
+            .spawn()
+            .map_err(|e| format!("Failed to open file manager: {}", e))?;
+    }
+
+    Ok(())
 }
 
 // --- Duplicate Detection ---
