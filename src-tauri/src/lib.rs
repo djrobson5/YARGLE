@@ -50,6 +50,7 @@ pub fn run() {
             rhythmverse::rv_touch_downloaded,
             rhythmverse::rv_set_upload_baseline,
             updater::check_for_update,
+            updater::download_and_apply_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

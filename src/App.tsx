@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { UpdateInfo } from "./types";
 import { SearchBar } from "./components/SearchBar";
@@ -52,6 +53,10 @@ function App() {
   const [showRhythmVerse, setShowRhythmVerse] = useState(false);
   const [currentFolder, setCurrentFolder] = useState<string | null>(null);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  // Non-null while a one-click self-update is in flight.
+  const [updating, setUpdating] = useState<{ phase: string; pct: number } | null>(
+    null
+  );
 
   // One quiet update check per launch; failures/absence stay silent.
   useEffect(() => {
@@ -59,6 +64,30 @@ function App() {
       .then((info) => setUpdate(info))
       .catch(() => {});
   }, []);
+
+  // Progress of an in-flight self-update (the app relaunches on completion).
+  useEffect(() => {
+    const un = listen<{ phase: string; received: number; total: number }>(
+      "update-progress",
+      (e) => {
+        const p = e.payload;
+        const pct = p.total > 0 ? Math.round((p.received / p.total) * 100) : 0;
+        setUpdating({ phase: p.phase, pct });
+      }
+    );
+    return () => {
+      un.then((fn) => fn());
+    };
+  }, []);
+
+  const handleSelfUpdate = () => {
+    if (!update?.download_url) return;
+    setUpdating({ phase: "starting", pct: 0 });
+    invoke("download_and_apply_update", { url: update.download_url }).catch((e) => {
+      setError(String(e));
+      setUpdating(null);
+    });
+  };
 
   // Resizable left pane: width persists across sessions, clamped so the
   // right panel always keeps a usable minimum.
@@ -214,25 +243,46 @@ function App() {
       <div className="right-panel">
         {update && (
           <div className="update-banner">
-            <span>
-              YARGLE v{update.version} is available
-            </span>
+            <span>YARGLE v{update.version} is available</span>
             <div className="update-banner-actions">
-              <button
-                className="update-banner-view"
-                onClick={() =>
-                  invoke("rv_open_external", { url: update.url }).catch(() => {})
-                }
-              >
-                View release
-              </button>
-              <button
-                className="update-banner-dismiss"
-                onClick={() => setUpdate(null)}
-                title="Dismiss"
-              >
-                &times;
-              </button>
+              {updating ? (
+                <span className="update-banner-progress">
+                  {updating.phase === "downloading"
+                    ? `Downloading… ${updating.pct}%`
+                    : updating.phase === "installing"
+                    ? "Installing…"
+                    : updating.phase === "restarting"
+                    ? "Restarting…"
+                    : "Starting…"}
+                </span>
+              ) : (
+                <>
+                  {update.download_url && (
+                    <button
+                      className="update-banner-update"
+                      onClick={handleSelfUpdate}
+                      title="Download and install the new version, then restart"
+                    >
+                      Update now
+                    </button>
+                  )}
+                  <button
+                    className="update-banner-view"
+                    onClick={() =>
+                      invoke("rv_open_external", { url: update.url }).catch(() => {})
+                    }
+                  >
+                    View release
+                  </button>
+                  <button
+                    className="update-banner-dismiss"
+                    onClick={() => setUpdate(null)}
+                    title="Dismiss"
+                  >
+                    &times;
+                  </button>
+                </>
+              )}
             </div>
           </div>
         )}

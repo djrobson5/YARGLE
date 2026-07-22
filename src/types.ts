@@ -190,4 +190,7 @@ export interface UpdateInfo {
   version: string;
   url: string;
   notes: string;
+  // Direct download URL for the release's yargle.exe (null if the release has
+  // no exe asset — then only "View release" is available).
+  download_url: string | null;
 }

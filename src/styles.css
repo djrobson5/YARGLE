@@ -92,6 +92,30 @@ body {
   background: var(--accent-hover);
 }
 
+/* Primary one-click self-update action. */
+.update-banner-update {
+  background: var(--success);
+  color: #fff;
+  border: none;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.update-banner-update:hover {
+  filter: brightness(1.1);
+}
+
+/* In-flight download/install status text. */
+.update-banner-progress {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
 .update-banner-dismiss {
   background: none;
   border: none;

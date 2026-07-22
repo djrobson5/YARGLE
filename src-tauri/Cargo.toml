@@ -1,6 +1,6 @@
 [package]
 name = "yargle"
-version = "0.57.0"
+version = "0.58.0"
 edition = "2021"
 
 [lib]
@@ -29,6 +29,7 @@ tokio = { version = "1", features = ["rt", "time"] }
 zip = "2"
 themethod3 = { git = "https://github.com/DarkRTA/themethod3", default-features = false }
 midly = "0.5"
+self-replace = "1"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
