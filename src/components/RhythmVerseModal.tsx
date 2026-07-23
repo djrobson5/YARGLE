@@ -211,6 +211,10 @@ export function RhythmVerseModal({
   const [sortBy, setSortBy] = useState<string>("update_date");
   const [sortOrder, setSortOrder] = useState<"DESC" | "ASC">("DESC");
   const [page, setPage] = useState(1);
+  // Editable page-number field (the "Page __ of N" jump box). Kept as its own
+  // string state so typing doesn't refetch on every keystroke — the jump is
+  // committed on Enter/blur. Synced back to `page` whenever the page changes.
+  const [pageInput, setPageInput] = useState("1");
 
   const [result, setResult] = useState<RvBrowseResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -562,6 +566,11 @@ export function RhythmVerseModal({
     resultsRef.current?.scrollTo({ top: 0 });
   }, [query, sortBy, sortOrder, page]);
 
+  // Keep the jump box showing the actual page after Prev/Next or a jump.
+  useEffect(() => {
+    setPageInput(String(page));
+  }, [page]);
+
   const submitSearch = () => {
     setPage(1);
     setQuery(text.trim());
@@ -570,6 +579,20 @@ export function RhythmVerseModal({
   const totalPages = result
     ? Math.max(1, Math.ceil(result.total_filtered / RECORDS_PER_PAGE))
     : 1;
+
+  // Parse the jump box and go there, clamped to [1, totalPages]. Invalid or
+  // unchanged input just snaps the field back to the current page.
+  const commitPageInput = () => {
+    const n = parseInt(pageInput, 10);
+    if (!Number.isNaN(n)) {
+      const target = Math.min(totalPages, Math.max(1, n));
+      if (target !== page) {
+        setPage(target);
+        return;
+      }
+    }
+    setPageInput(String(page));
+  };
 
   // Split the in-flight map into "downloading now" vs "waiting" for the status
   // bar and the minimized-pill badge.
@@ -901,7 +924,25 @@ export function RhythmVerseModal({
             {"←"} Prev
           </button>
           <span className="rv-page-info">
-            Page {page} of {totalPages.toLocaleString()}
+            Page{" "}
+            <input
+              className="rv-page-input"
+              type="text"
+              inputMode="numeric"
+              value={pageInput}
+              onChange={(e) => setPageInput(e.target.value.replace(/[^0-9]/g, ""))}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  commitPageInput();
+                }
+              }}
+              onBlur={commitPageInput}
+              onFocus={(e) => e.target.select()}
+              title="Type a page number and press Enter to jump"
+              aria-label="Page number — type and press Enter to jump"
+            />{" "}
+            of {totalPages.toLocaleString()}
           </span>
           <button
             className="rv-page-btn"

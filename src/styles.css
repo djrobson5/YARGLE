@@ -3047,3 +3047,29 @@ section h3 {
   font-size: 12px;
   color: var(--text-muted);
 }
+
+/* Editable page-number field in the "Page __ of N" jump box. */
+.rv-page-input {
+  width: 3.5em;
+  margin: 0 2px;
+  padding: 3px 4px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: center;
+  outline: none;
+  /* Hide number-spinner arrows if the platform renders any. */
+  -moz-appearance: textfield;
+}
+
+.rv-page-input::-webkit-outer-spin-button,
+.rv-page-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.rv-page-input:focus {
+  border-color: var(--accent);
+}
