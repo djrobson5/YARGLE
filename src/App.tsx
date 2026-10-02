@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { FixTarget, SortMode, UpdateInfo } from "./types";
+import type { FixTarget, SongSummary, SortMode, UpdateInfo } from "./types";
 import { SearchBar } from "./components/SearchBar";
 import { FileList } from "./components/FileList";
 import { MetadataEditor } from "./components/MetadataEditor";
@@ -14,6 +14,7 @@ import { BatchEditModal } from "./components/BatchEditModal";
 import { OrganizeModal } from "./components/OrganizeModal";
 import { ValidatorModal } from "./components/ValidatorModal";
 import { RhythmVerseModal } from "./components/RhythmVerseModal";
+import type { TargetScope } from "./targets";
 import { LogoLockup } from "./components/Logo";
 import { useSongFiles } from "./hooks/useSongFiles";
 import { X } from "lucide-react";
@@ -213,6 +214,24 @@ function App() {
     return result;
   }, [songs, filter, gameOriginFilter]);
 
+  // Songs a toolbar action (Decrypt, Rename, Organize, Validate, Batch Edit)
+  // applies to: the checked songs if any, else whatever the list shows.
+  const actionTargets = useMemo((): { songs: SongSummary[]; scope: TargetScope } => {
+    if (multiSelected.size > 0) {
+      return { songs: songs.filter((s) => multiSelected.has(s.path)), scope: "selected" };
+    }
+    return {
+      songs: filteredSongs,
+      scope: filteredSongs.length === songs.length ? "all" : "shown",
+    };
+  }, [songs, filteredSongs, multiSelected]);
+  const targetPaths = useMemo(() => actionTargets.songs.map((s) => s.path), [actionTargets]);
+  // Rename only knows the CON naming scheme (Artist - Title_rb3con), so folders are left out.
+  const conTargetPaths = useMemo(
+    () => actionTargets.songs.filter((s) => !s.is_folder).map((s) => s.path),
+    [actionTargets]
+  );
+
   const handleSelectAllVisible = useCallback(() => {
     selectAllPaths(filteredSongs.map((s) => s.path));
   }, [filteredSongs, selectAllPaths]);
@@ -383,7 +402,8 @@ function App() {
       )}
       {showMoggDecrypt && (
         <MoggDecryptModal
-          paths={songs.map((s) => s.path)}
+          paths={targetPaths}
+          scope={actionTargets.scope}
           onClose={() => setShowMoggDecrypt(false)}
         />
       )}
@@ -401,7 +421,8 @@ function App() {
       )}
       {showRename && (
         <RenameModal
-          paths={songs.map((s) => s.path)}
+          paths={conTargetPaths}
+          scope={actionTargets.scope}
           onClose={(renamed) => {
             setShowRename(false);
             if (renamed && currentFolder) {
@@ -412,7 +433,8 @@ function App() {
       )}
       {showOrganize && currentFolder && (
         <OrganizeModal
-          paths={songs.map((s) => s.path)}
+          paths={targetPaths}
+          scope={actionTargets.scope}
           currentFolder={currentFolder}
           onClose={(organized) => {
             setShowOrganize(false);
@@ -424,7 +446,8 @@ function App() {
       )}
       {showValidator && (
         <ValidatorModal
-          paths={songs.map((s) => s.path)}
+          paths={targetPaths}
+          scope={actionTargets.scope}
           onClose={() => setShowValidator(false)}
           onFixBroken={(song) =>
             startFix({
@@ -457,11 +480,8 @@ function App() {
       )}
       {showBatchEdit && (
         <BatchEditModal
-          paths={multiSelected.size > 0
-            ? songs.filter(s => multiSelected.has(s.path)).map(s => s.path)
-            : songs.map((s) => s.path)
-          }
-          isSelection={multiSelected.size > 0}
+          paths={targetPaths}
+          scope={actionTargets.scope}
           onClose={(edited) => {
             setShowBatchEdit(false);
             if (edited && currentFolder) {

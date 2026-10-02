@@ -6,6 +6,7 @@ import sourcesData from "../data/sources.json";
 import { BROKEN_FIELD } from "../types";
 import type { BatchValidateResult, SongValidationResult, SongDetails, ValidationIssue } from "../types";
 import { X } from "lucide-react";
+import { describeTargets, type TargetScope } from "../targets";
 
 const SOURCES_OPTIONS = (sourcesData.sources as { ids: string[]; names: { "en-US": string } }[])
   .filter((s) => s.ids[0] !== "$DEFAULT$")
@@ -13,6 +14,7 @@ const SOURCES_OPTIONS = (sourcesData.sources as { ids: string[]; names: { "en-US
 
 interface ValidatorModalProps {
   paths: string[];
+  scope: TargetScope;
   onClose: () => void;
   // Re-download a broken song through the chart browser.
   onFixBroken?: (song: SongValidationResult) => void;
@@ -43,8 +45,19 @@ const FIXABLE_FIELDS = new Set([
   "game_origin", "genre", "author", "album_name", "year_released", "rating", "shortname",
 ]);
 
+// Fixable one song at a time only: a single value for every song makes no sense.
+// Their batch action fills each song from its own file name instead.
+const GUESSABLE_FIELDS = new Set(["name", "artist"]);
+
 function isFixable(issue: ValidationIssue): boolean {
-  return FIXABLE_FIELDS.has(issue.field);
+  return FIXABLE_FIELDS.has(issue.field) || GUESSABLE_FIELDS.has(issue.field);
+}
+
+// The file-name guess for a missing artist or title, or "".
+function guessFor(song: SongValidationResult, field: string): string {
+  if (field === "artist") return song.suggested_artist;
+  if (field === "name") return song.suggested_title;
+  return "";
 }
 
 function fileName(path: string): string {
@@ -132,7 +145,7 @@ function coerceValue(field: string, raw: string): string | number | null {
   return raw;
 }
 
-export function ValidatorModal({ paths, onClose, onFixBroken }: ValidatorModalProps) {
+export function ValidatorModal({ paths, scope, onClose, onFixBroken }: ValidatorModalProps) {
   const [state, setState] = useState<"ready" | "scanning" | "results">("ready");
   const [progress, setProgress] = useState<ValidateProgress | null>(null);
   const [result, setResult] = useState<BatchValidateResult | null>(null);
@@ -228,6 +241,29 @@ export function ValidatorModal({ paths, onClose, onFixBroken }: ValidatorModalPr
     }
   };
 
+  // Fill a missing artist or title on every affected song from its own file name.
+  const applyGuesses = async (field: string) => {
+    if (!result) return;
+    const affected = result.results.filter(
+      (s) => s.issues.some((i) => i.field === field) && guessFor(s, field)
+    );
+    setBatchFixProgress({ current: 0, total: affected.length });
+    try {
+      for (let idx = 0; idx < affected.length; idx++) {
+        const song = affected[idx];
+        const details = await invoke<SongDetails>("get_song_details", { path: song.path });
+        const patched = { ...details.metadata, [field]: guessFor(song, field) };
+        await invoke("save_song", { path: song.path, metadata: patched });
+        removeIssue(song.path, field);
+        setBatchFixProgress({ current: idx + 1, total: affected.length });
+      }
+    } catch (e) {
+      setError(`Batch fix failed: ${e}`);
+    } finally {
+      setBatchFixProgress(null);
+    }
+  };
+
   // Remove a specific field's issues from a song, and clean up counts
   const removeIssue = (path: string, field: string) => {
     setResult((prev) => {
@@ -281,6 +317,14 @@ export function ValidatorModal({ paths, onClose, onFixBroken }: ValidatorModalPr
       .map(([field, count]) => ({ field, count, fixable: FIXABLE_FIELDS.has(field) }));
   }, [result, filter]);
 
+  // Songs the "Fill from file names" button would fix for the chosen category.
+  const guessCount = useMemo(() => {
+    if (!result || !GUESSABLE_FIELDS.has(fieldFilter)) return 0;
+    return result.results.filter(
+      (s) => s.issues.some((i) => i.field === fieldFilter) && guessFor(s, fieldFilter)
+    ).length;
+  }, [result, fieldFilter]);
+
   const progressPct = progress
     ? Math.round((progress.current / progress.total) * 100)
     : 0;
@@ -302,12 +346,12 @@ export function ValidatorModal({ paths, onClose, onFixBroken }: ValidatorModalPr
           {state === "ready" && (
             <>
               <p className="mogg-decrypt-desc">
-                Check {paths.length} song{paths.length !== 1 ? "s" : ""} for
+                Check {describeTargets(paths.length, scope)} for
                 missing chart or audio files and missing or invalid metadata. Catches
                 common issues that can cause YARG to skip or misidentify songs.
               </p>
               <div className="dialog-footer">
-                <button className="mogg-decrypt-start" onClick={handleScan}>
+                <button className="mogg-decrypt-start" onClick={handleScan} disabled={paths.length === 0}>
                   Run Validation
                 </button>
               </div>
@@ -399,6 +443,15 @@ export function ValidatorModal({ paths, onClose, onFixBroken }: ValidatorModalPr
                       }}
                     >
                       Fix All
+                    </button>
+                  )}
+                  {GUESSABLE_FIELDS.has(fieldFilter) && guessCount > 0 && (
+                    <button
+                      className="validator-fix-btn"
+                      title="Each song gets the artist or title its own file name suggests"
+                      onClick={() => applyGuesses(fieldFilter)}
+                    >
+                      Fill from file names ({guessCount})
                     </button>
                   )}
                 </div>
@@ -506,7 +559,7 @@ export function ValidatorModal({ paths, onClose, onFixBroken }: ValidatorModalPr
                                         onClick={(e) => {
                                           e.stopPropagation();
                                           setFixingIssue({ path: song.path, field: issue.field });
-                                          setFixValue("");
+                                          setFixValue(guessFor(song, issue.field));
                                         }}
                                       >
                                         Fix

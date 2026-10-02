@@ -181,10 +181,13 @@ pub fn serialize_song_ini(meta: &SongMetadata, original: &str, display_name: Opt
         }
     }
 
-    let mut result = lines.join("\n");
+    // Keep the file's own line endings (most chart tools write CRLF);
+    // `lines()` above dropped the `\r`s.
+    let newline = if original.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut result = lines.join(newline);
     // Preserve trailing newline if original had one
     if original.ends_with('\n') && !result.ends_with('\n') {
-        result.push('\n');
+        result.push_str(newline);
     }
     result
 }
@@ -215,5 +218,19 @@ mod tests {
         assert!(result.contains("name = New Name"));
         assert!(result.contains("artist = New Artist"));
         assert!(result.contains("charter = Someone"));
+    }
+
+    #[test]
+    fn test_keeps_line_endings() {
+        let crlf = "[song]\r\nname = Old\r\ncharter = Someone\r\n";
+        let mut meta = parse_song_ini(crlf);
+        meta.artist = "New Artist".to_string();
+        assert_eq!(
+            serialize_song_ini(&meta, crlf, None, None),
+            "[song]\r\nname = Old\r\ncharter = Someone\r\nartist = New Artist\r\n"
+        );
+
+        let lf = "[song]\nname = Old\n";
+        assert_eq!(serialize_song_ini(&parse_song_ini(lf), lf, None, None), lf);
     }
 }

@@ -2,9 +2,11 @@ import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { X } from "lucide-react";
+import { describeTargets, type TargetScope } from "../targets";
 
 interface MoggDecryptModalProps {
   paths: string[];
+  scope: TargetScope;
   onClose: () => void;
 }
 
@@ -23,7 +25,7 @@ interface MoggDecryptProgress {
   status: string;
 }
 
-export function MoggDecryptModal({ paths, onClose }: MoggDecryptModalProps) {
+export function MoggDecryptModal({ paths, scope, onClose }: MoggDecryptModalProps) {
   const [state, setState] = useState<"ready" | "running" | "complete">("ready");
   const [progress, setProgress] = useState<MoggDecryptProgress | null>(null);
   const [result, setResult] = useState<BatchDecryptResult | null>(null);
@@ -73,12 +75,12 @@ export function MoggDecryptModal({ paths, onClose }: MoggDecryptModalProps) {
           {state === "ready" && (
             <>
               <p className="mogg-decrypt-desc">
-                Decrypt encrypted MOGG audio files inside {paths.length} CON
-                package{paths.length !== 1 ? "s" : ""} so YARG can play them.
+                Decrypt encrypted MOGG audio files in {describeTargets(paths.length, scope)} so
+                YARG can play them.
                 This modifies the files in-place.
               </p>
               <div className="dialog-footer">
-                <button className="mogg-decrypt-start" onClick={handleStart}>
+                <button className="mogg-decrypt-start" onClick={handleStart} disabled={paths.length === 0}>
                   Decrypt All
                 </button>
               </div>

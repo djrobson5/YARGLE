@@ -1658,8 +1658,13 @@ section h3,
   font-weight: 600;
 }
 
-.mogg-decrypt-start:hover {
+.mogg-decrypt-start:hover:not(:disabled) {
   background: var(--accent-hover);
+}
+
+.mogg-decrypt-start:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .mogg-decrypt-progress {

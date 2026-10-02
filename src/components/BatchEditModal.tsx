@@ -4,10 +4,11 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import type { SongMetadata } from "../types";
 import sourcesData from "../data/sources.json";
 import { X } from "lucide-react";
+import { describeTargets, type TargetScope } from "../targets";
 
 interface BatchEditModalProps {
   paths: string[];
-  isSelection?: boolean;
+  scope: TargetScope;
   onClose: (edited: boolean) => void;
 }
 
@@ -63,7 +64,7 @@ const GAME_ORIGINS = (sourcesData.sources as SourceEntry[]).map((s) => ({
   type: s.type,
 }));
 
-export function BatchEditModal({ paths, isSelection, onClose }: BatchEditModalProps) {
+export function BatchEditModal({ paths, scope, onClose }: BatchEditModalProps) {
   const [state, setState] = useState<"pick" | "scanning" | "review" | "applying" | "done">("pick");
   const [field, setField] = useState("author");
   const [newValue, setNewValue] = useState("");
@@ -310,10 +311,7 @@ export function BatchEditModal({ paths, isSelection, onClose }: BatchEditModalPr
             <>
               <p className="mogg-decrypt-desc">
                 Edit a single metadata field across{" "}
-                {isSelection
-                  ? `${paths.length} selected song${paths.length !== 1 ? "s" : ""}`
-                  : `all ${paths.length} loaded song${paths.length !== 1 ? "s" : ""}`
-                }. Pick the field and new value,
+                {describeTargets(paths.length, scope)}. Pick the field and new value,
                 then scan to preview changes.
               </p>
               <div className="batch-edit-field-picker">

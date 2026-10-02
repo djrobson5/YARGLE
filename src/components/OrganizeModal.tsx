@@ -2,9 +2,11 @@ import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { ArrowRight, X } from "lucide-react";
+import { describeTargets, type TargetScope } from "../targets";
 
 interface OrganizeModalProps {
   paths: string[];
+  scope: TargetScope;
   currentFolder: string;
   onClose: (organized: boolean) => void;
 }
@@ -61,6 +63,7 @@ function fileName(path: string): string {
 
 export function OrganizeModal({
   paths,
+  scope,
   currentFolder,
   onClose,
 }: OrganizeModalProps) {
@@ -222,7 +225,7 @@ export function OrganizeModal({
           {state === "ready" && (
             <>
               <p className="mogg-decrypt-desc">
-                Sort {paths.length} song{paths.length !== 1 ? "s" : ""} into folders
+                Sort {describeTargets(paths.length, scope)} into folders
                 named from their metadata. Everything before the last <code>/</code> becomes
                 folders; the last part names the song (the folder, or the file for a CON).
               </p>

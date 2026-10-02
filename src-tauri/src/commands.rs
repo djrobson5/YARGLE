@@ -10,6 +10,7 @@ use crate::dta::parser::{extract_metadata, parse_dta};
 use crate::dta::serializer::{apply_metadata, serialize_dta};
 use crate::dta::types::{SongDetails, SongMetadata, SongSummary, ValidationIssue};
 use crate::dta::validator::validate_metadata;
+use crate::filename_guess::guess_artist_title;
 use crate::midi::parser as midi_parser;
 use crate::midi::types::{ChartOverview, InstrumentNotes};
 use crate::song_ini;
@@ -1321,8 +1322,15 @@ fn extract_artist_name(path: &str) -> Option<(String, String)> {
         return None;
     }
 
-    let artist = if meta.artist.is_empty() { "Unknown Artist".to_string() } else { meta.artist };
-    let name = if meta.name.is_empty() { "Unknown Song".to_string() } else { meta.name };
+    // Fill a missing half from the file name before falling back to "Unknown".
+    let guess = if meta.artist.is_empty() || meta.name.is_empty() {
+        p.file_name().and_then(|n| guess_artist_title(&n.to_string_lossy()))
+    } else {
+        None
+    };
+    let (guess_artist, guess_name) = guess.unzip();
+    let artist = if meta.artist.is_empty() { guess_artist.unwrap_or_else(|| "Unknown Artist".to_string()) } else { meta.artist };
+    let name = if meta.name.is_empty() { guess_name.unwrap_or_else(|| "Unknown Song".to_string()) } else { meta.name };
 
     Some((artist, name))
 }
@@ -1857,6 +1865,10 @@ pub struct SongValidationResult {
     pub artist: String,
     pub title: String,
     pub issues: Vec<ValidationIssue>,
+    /// Artist / title guessed from the file name when the metadata lacks
+    /// either; empty when there's nothing to suggest.
+    pub suggested_artist: String,
+    pub suggested_title: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1998,7 +2010,20 @@ pub async fn batch_validate(paths: Vec<String>, app: AppHandle) -> Result<BatchV
             match outcome {
                 Some((display_name, artist, title, issues)) => {
                     if !issues.is_empty() {
-                        results.push(SongValidationResult { path, display_name, artist, title, issues });
+                        let missing = issues.iter().any(|i| i.field == "name" || i.field == "artist");
+                        let (suggested_artist, suggested_title) = missing
+                            .then(|| Path::new(&path).file_name().and_then(|n| guess_artist_title(&n.to_string_lossy())))
+                            .flatten()
+                            .unwrap_or_default();
+                        results.push(SongValidationResult {
+                            path,
+                            display_name,
+                            artist,
+                            title,
+                            issues,
+                            suggested_artist,
+                            suggested_title,
+                        });
                     }
                 }
                 None => parse_failures += 1,

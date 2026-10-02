@@ -75,6 +75,10 @@ export interface SongValidationResult {
   artist: string;
   title: string;
   issues: ValidationIssue[];
+  // Artist / title guessed from the file name when the metadata lacks
+  // either; empty when there's nothing to suggest.
+  suggested_artist: string;
+  suggested_title: string;
 }
 
 // Issues with this field mean the song can't play (missing chart or audio);

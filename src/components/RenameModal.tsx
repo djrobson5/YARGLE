@@ -2,9 +2,11 @@ import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { X } from "lucide-react";
+import { describeTargets, type TargetScope } from "../targets";
 
 interface RenameModalProps {
   paths: string[];
+  scope: TargetScope;
   onClose: (renamed: boolean) => void;
 }
 
@@ -38,7 +40,7 @@ function dirName(path: string): string {
   return lastSlash >= 0 ? path.substring(0, lastSlash) : ".";
 }
 
-export function RenameModal({ paths, onClose }: RenameModalProps) {
+export function RenameModal({ paths, scope, onClose }: RenameModalProps) {
   const [state, setState] = useState<
     "ready" | "scanning" | "results" | "done"
   >("ready");
@@ -144,12 +146,21 @@ export function RenameModal({ paths, onClose }: RenameModalProps) {
           {state === "ready" && (
             <>
               <p className="mogg-decrypt-desc">
-                Rename {paths.length} CON file{paths.length !== 1 ? "s" : ""}{" "}
-                based on their DTA metadata. Files will be renamed to{" "}
-                <strong>Artist - Title_rb3con</strong> format.
+                {paths.length === 0 ? (
+                  <>
+                    {scope === "selected" ? "None of the selected songs are" : scope === "shown" ? "None of the shown songs are" : "There are no"}{" "}
+                    CON files. Rename only renames CON packages; song folders are left as they are.
+                  </>
+                ) : (
+                  <>
+                    Rename {describeTargets(paths.length, scope, "CON file")}{" "}
+                    based on their DTA metadata. Files will be renamed to{" "}
+                    <strong>Artist - Title_rb3con</strong> format. Song folders are left as they are.
+                  </>
+                )}
               </p>
               <div className="dialog-footer">
-                <button className="mogg-decrypt-start" onClick={handleScan}>
+                <button className="mogg-decrypt-start" onClick={handleScan} disabled={paths.length === 0}>
                   Scan Metadata
                 </button>
               </div>
