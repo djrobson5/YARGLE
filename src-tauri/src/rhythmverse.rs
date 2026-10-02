@@ -14,14 +14,14 @@
 use reqwest::Client;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use std::fs::{self, File};
-use std::io::{self, Cursor};
+use crate::download::{self, archive, hosts, TempFile};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-const BASE: &str = "https://rhythmverse.co";
-const USER_AGENT: &str = concat!("YARGLE/", env!("CARGO_PKG_VERSION"), " (song browser)");
+pub(crate) const BASE: &str = "https://rhythmverse.co";
+pub(crate) const USER_AGENT: &str = concat!("YARGLE/", env!("CARGO_PKG_VERSION"), " (song browser)");
 
 /// One row in the browse results — a specific chart file for a game.
 #[derive(Debug, Clone, Serialize)]
@@ -48,9 +48,12 @@ pub struct RvSongFile {
     pub detail_url: String,
     pub download_url: String,
     // Non-empty when the file is hosted off-site (Google Drive, Mediafire, …)
-    // rather than on RhythmVerse. These can't be auto-downloaded reliably, so
-    // the UI opens them in the browser instead.
+    // rather than on RhythmVerse.
     pub external_url: String,
+    // True when `rv_download` can fetch that off-site link itself (Drive,
+    // Mediafire, Dropbox, shorteners, direct archive links). False means the
+    // UI only offers "Open ↗" (MEGA, Ko-fi, other web pages).
+    pub external_auto: bool,
     // Per-instrument difficulty tiers. >=1 means charted at that tier;
     // 0 / -1 / null means the instrument isn't present.
     pub diff_guitar: Option<i64>,
@@ -87,13 +90,13 @@ struct RvError {
 }
 
 #[derive(Deserialize, Default)]
-struct RvData {
+pub(crate) struct RvData {
     // The API returns `songs: false` (not `[]`) when nothing matches, so parse
     // leniently: anything that isn't an array becomes an empty list.
     #[serde(default, deserialize_with = "de_songs_lenient")]
-    songs: Vec<RvSongRaw>,
+    pub(crate) songs: Vec<RvSongRaw>,
     #[serde(default)]
-    records: RvCounts,
+    pub(crate) records: RvCounts,
 }
 
 fn de_songs_lenient<'de, D>(deserializer: D) -> Result<Vec<RvSongRaw>, D::Error>
@@ -110,27 +113,27 @@ where
 }
 
 #[derive(Deserialize, Default)]
-struct RvCounts {
+pub(crate) struct RvCounts {
     #[serde(default)]
-    total_available: i64,
+    pub(crate) total_available: i64,
     #[serde(default)]
-    total_filtered: i64,
+    pub(crate) total_filtered: i64,
     #[serde(default)]
-    returned: i64,
+    pub(crate) returned: i64,
 }
 
 #[derive(Deserialize)]
-struct RvSongRaw {
+pub(crate) struct RvSongRaw {
     #[serde(default)]
-    data: Value,
+    pub(crate) data: Value,
     #[serde(default)]
-    file: Value,
+    pub(crate) file: Value,
 }
 
 // --- Coercion helpers (the API is inconsistent about string vs number) ---
 
 /// Extract a field as a String, coercing numbers/bools to their text form.
-fn cs(v: &Value, key: &str) -> String {
+pub(crate) fn cs(v: &Value, key: &str) -> String {
     match v.get(key) {
         Some(Value::String(s)) => s.clone(),
         Some(Value::Number(n)) => n.to_string(),
@@ -140,7 +143,7 @@ fn cs(v: &Value, key: &str) -> String {
 }
 
 /// Extract a field as an i64, parsing numeric strings and truncating floats.
-fn ci(v: &Value, key: &str) -> Option<i64> {
+pub(crate) fn ci(v: &Value, key: &str) -> Option<i64> {
     match v.get(key) {
         Some(Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
         Some(Value::String(s)) => {
@@ -158,7 +161,7 @@ fn ci(v: &Value, key: &str) -> Option<i64> {
 }
 
 /// Turn a possibly-relative URL/path into an absolute rhythmverse.co URL.
-fn absolutize(u: &str) -> String {
+pub(crate) fn absolutize(u: &str) -> String {
     let u = u.trim();
     if u.is_empty() {
         String::new()
@@ -178,7 +181,7 @@ fn build_client() -> Result<Client, String> {
         .map_err(|e| format!("Failed to build HTTP client: {}", e))
 }
 
-fn map_song(raw: &RvSongRaw) -> Option<RvSongFile> {
+pub(crate) fn map_song(raw: &RvSongRaw) -> Option<RvSongFile> {
     let d = &raw.data;
     let f = &raw.file;
 
@@ -197,6 +200,8 @@ fn map_song(raw: &RvSongRaw) -> Option<RvSongFile> {
             c
         }
     };
+
+    let external_url = cs(f, "external_url").trim().to_string();
 
     Some(RvSongFile {
         song_id: ci(d, "song_id"),
@@ -227,7 +232,8 @@ fn map_song(raw: &RvSongRaw) -> Option<RvSongFile> {
         file_name: cs(f, "file_name"),
         detail_url: format!("{}/songfile/{}", BASE, file_id),
         download_url: format!("{}/download/{}", BASE, file_id),
-        external_url: cs(f, "external_url").trim().to_string(),
+        external_auto: !external_url.is_empty() && hosts::classify(&external_url).is_some(),
+        external_url,
         // Read per-instrument difficulty from the FILE (only the instruments
         // actually in this chart), NOT `data` (the song-level aggregate across
         // all versions/formats, which would falsely add e.g. vocals).
@@ -238,6 +244,42 @@ fn map_song(raw: &RvSongRaw) -> Option<RvSongFile> {
         diff_keys: ci(f, "diff_keys"),
         file_id,
     })
+}
+
+/// POST one `songfiles` request and unwrap the `{status, data}` envelope.
+pub(crate) async fn post_songfiles(
+    client: &Client,
+    url: &str,
+    params: &[(&str, String)],
+) -> Result<RvData, String> {
+    let resp = client
+        .post(url)
+        .header("X-Requested-With", "XMLHttpRequest")
+        .header("Accept", "application/json, text/javascript, */*; q=0.01")
+        .form(params)
+        .send()
+        .await
+        .map_err(|e| format!("RhythmVerse request failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("RhythmVerse HTTP {}", resp.status()));
+    }
+
+    let parsed: RvResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse RhythmVerse response: {}", e))?;
+
+    if parsed.status != "success" {
+        let msg = parsed
+            .error
+            .map(|e| e.message)
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| "RhythmVerse returned an error".into());
+        return Err(msg);
+    }
+
+    Ok(parsed.data.unwrap_or_default())
 }
 
 /// Fetch a page of browse/search results for a game (default `yarg`).
@@ -288,34 +330,7 @@ pub async fn rv_browse(
     }
 
     let client = build_client()?;
-    let resp = client
-        .post(&url)
-        .header("X-Requested-With", "XMLHttpRequest")
-        .header("Accept", "application/json, text/javascript, */*; q=0.01")
-        .form(&params)
-        .send()
-        .await
-        .map_err(|e| format!("RhythmVerse request failed: {}", e))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("RhythmVerse HTTP {}", resp.status()));
-    }
-
-    let parsed: RvResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse RhythmVerse response: {}", e))?;
-
-    if parsed.status != "success" {
-        let msg = parsed
-            .error
-            .map(|e| e.message)
-            .filter(|m| !m.is_empty())
-            .unwrap_or_else(|| "RhythmVerse returned an error".into());
-        return Err(msg);
-    }
-
-    let data = parsed.data.unwrap_or_default();
+    let data = post_songfiles(&client, &url, &params).await?;
     let songs: Vec<RvSongFile> = data.songs.iter().filter_map(map_song).collect();
 
     Ok(RvBrowseResult {
@@ -335,6 +350,11 @@ pub struct RvDownloadResult {
     pub extracted_to: String,
     pub entries: usize,
 }
+
+/// Progress sink for one download: `(phase, received, total, message)`.
+/// `rv_download` points it at `emit_progress`; keeping it a closure lets the
+/// install steps run without an `AppHandle`.
+type Report<'a> = &'a (dyn Fn(&str, u64, u64, &str) + Send + Sync);
 
 fn emit_progress(app: &AppHandle, file_id: &str, phase: &str, received: u64, total: u64, message: &str) {
     let _ = app.emit(
@@ -409,45 +429,7 @@ fn build_download_client() -> Result<Client, String> {
         .map_err(|e| format!("Failed to build HTTP client: {}", e))
 }
 
-/// Extract a zip's bytes into `dest`, guarding against zip-slip. Returns the
-/// top-level folder the song landed in and the number of files written.
-fn extract_zip(bytes: &[u8], dest: &Path) -> Result<(PathBuf, usize), String> {
-    let mut archive =
-        zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("Invalid zip: {}", e))?;
-    let mut count = 0usize;
-    let mut top_level: Option<PathBuf> = None;
-
-    for i in 0..archive.len() {
-        let mut file = archive
-            .by_index(i)
-            .map_err(|e| format!("Zip read error: {}", e))?;
-        // enclosed_name() returns None for unsafe (path-traversal) entries.
-        let rel = match file.enclosed_name() {
-            Some(p) => p.to_path_buf(),
-            None => continue,
-        };
-        if top_level.is_none() {
-            if let Some(std::path::Component::Normal(first)) = rel.components().next() {
-                top_level = Some(dest.join(first));
-            }
-        }
-        let outpath = dest.join(&rel);
-        if file.is_dir() {
-            fs::create_dir_all(&outpath).map_err(|e| format!("mkdir failed: {}", e))?;
-        } else {
-            if let Some(parent) = outpath.parent() {
-                fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {}", e))?;
-            }
-            let mut out = File::create(&outpath).map_err(|e| format!("write failed: {}", e))?;
-            io::copy(&mut file, &mut out).map_err(|e| format!("extract failed: {}", e))?;
-            count += 1;
-        }
-    }
-
-    Ok((top_level.unwrap_or_else(|| dest.to_path_buf()), count))
-}
-
-fn open_db(app: &AppHandle) -> Result<rusqlite::Connection, String> {
+pub(crate) fn open_db(app: &AppHandle) -> Result<rusqlite::Connection, String> {
     let conn = rusqlite::Connection::open(crate::local_db::db_path(app)?)
         .map_err(|e| format!("SQLite open failed: {}", e))?;
     // rv_downloads = files fetched + extracted into the library (exact "have").
@@ -497,6 +479,9 @@ pub struct RvDownloadRecord {
     // UI treats an empty baseline as "don't flag updates" to avoid false
     // positives, and backfills it the next time the song appears in a browse.
     pub rv_upload_date: String,
+    // A "Got it" mark with no on-disk path (the user placed the file by hand).
+    // Only these can be undone from the browser.
+    pub manual: bool,
 }
 
 /// RhythmVerse files held locally, each with the site's upload_date for the
@@ -506,7 +491,7 @@ pub struct RvDownloadRecord {
 pub fn rv_download_records(app: AppHandle) -> Result<Vec<RvDownloadRecord>, String> {
     let conn = open_db(&app)?;
     let mut stmt = conn
-        .prepare("SELECT file_id, downloaded_at, rv_upload_date FROM rv_downloads")
+        .prepare("SELECT file_id, downloaded_at, rv_upload_date, dest_path FROM rv_downloads")
         .map_err(|e| e.to_string())?;
     let records = stmt
         .query_map([], |row| {
@@ -514,6 +499,7 @@ pub fn rv_download_records(app: AppHandle) -> Result<Vec<RvDownloadRecord>, Stri
                 file_id: row.get(0)?,
                 downloaded_at: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
                 rv_upload_date: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                manual: row.get::<_, Option<String>>(3)?.unwrap_or_default().is_empty(),
             })
         })
         .map_err(|e| e.to_string())?
@@ -706,18 +692,11 @@ pub fn rv_touch_downloaded(app: AppHandle, file_id: String) -> Result<(), String
     Ok(())
 }
 
-/// Fetch the interstitial, resolve the real download URL, wait out the
-/// countdown, and stream the file bytes — calling `on_progress(received,
-/// total)` as it goes. Returns the bytes plus a suggested filename (from the
-/// Content-Disposition header, else the URL's last path segment). The network
-/// core of `rv_download`, factored out so it needs no `AppHandle`. Note the
-/// payload may be a zip OR a loose file (raw CON/STFS, `.sng`, etc.).
-async fn fetch_download(
-    client: &Client,
-    file_id: &str,
-    on_progress: &(dyn Fn(u64, u64) + Send + Sync),
-) -> Result<(Vec<u8>, String), String> {
-    // 1) Interstitial page (also establishes the download cookie).
+/// Resolve a RhythmVerse file to its direct URL: GET the `/download/{id}`
+/// interstitial (which also sets the download cookie), pull the real file URL
+/// out of its redirect script, and wait out its countdown politely. Returns
+/// the file URL plus the interstitial URL (sent as the Referer).
+async fn rv_file_url(client: &Client, file_id: &str) -> Result<(String, String), String> {
     let interstitial_url = format!("{}/download/{}", BASE, file_id);
     let html = client
         .get(&interstitial_url)
@@ -732,149 +711,161 @@ async fn fetch_download(
         .map(|u| absolutize(&u))
         .ok_or("Could not find the download link on the RhythmVerse page")?;
 
-    // 2) Honor the interstitial's short countdown — be a polite client.
+    // Honor the interstitial's short countdown — be a polite client.
     tokio::time::sleep(Duration::from_millis(1500)).await;
+    Ok((file_url, interstitial_url))
+}
 
-    // 3) Stream the file, reporting progress against content-length.
-    let mut resp = client
-        .get(&file_url)
-        .header("Referer", &interstitial_url)
-        .send()
-        .await
-        .map_err(|e| format!("Download request failed: {}", e))?;
-    if !resp.status().is_success() {
-        return Err(format!("Download failed: HTTP {}", resp.status()));
+/// Fetch an off-site file into `out`. Google Drive sometimes answers with its
+/// "can't scan for viruses" page instead of the file; follow that page's
+/// confirm form once, and report quota/private files clearly.
+async fn fetch_external_file(
+    client: &Client,
+    url: &str,
+    out: &Path,
+    on_progress: &(dyn Fn(u64, u64) + Send + Sync),
+) -> Result<download::Fetched, String> {
+    let headers = [("User-Agent", download::BROWSER_UA)];
+    let fetched = download::fetch_to_file(client, url, &headers, out, on_progress).await?;
+    if !hosts::is_drive_url(url) || !fetched.content_type.starts_with("text/html") {
+        return Ok(fetched);
     }
+    let html = fs::read_to_string(out).unwrap_or_default();
+    let confirm = hosts::drive_confirm_url(&html).ok_or(hosts::DRIVE_UNAVAILABLE)?;
+    let fetched = download::fetch_to_file(client, &confirm, &headers, out, on_progress).await?;
+    if fetched.content_type.starts_with("text/html") {
+        return Err(hosts::DRIVE_UNAVAILABLE.into());
+    }
+    Ok(fetched)
+}
 
-    // Resolve the filename before consuming the body.
-    let cd_name = resp
-        .headers()
-        .get("content-disposition")
-        .and_then(|v| v.to_str().ok())
-        .and_then(filename_from_disposition);
-    let url_name = resp
-        .url()
-        .path_segments()
-        .and_then(|segs| segs.filter(|s| !s.is_empty()).last().map(percent_decode));
-    let filename = sanitize_filename(cd_name.or(url_name), file_id);
+/// Put a downloaded payload into the library: extract it if it's an archive,
+/// otherwise save it under `filename` (raw CON/STFS packages, `.sng`, …;
+/// YARGLE detects those by magic bytes). Returns the song's path and the
+/// number of files written.
+fn install_payload(
+    report: Report,
+    temp: &Path,
+    filename: &str,
+    dest: &Path,
+    size: u64,
+    html_error: &str,
+) -> Result<(PathBuf, usize), String> {
+    let head = download::read_head(temp, 512);
+    if download::looks_like_html(&head) {
+        return Err(html_error.into());
+    }
+    if let Some(kind) = archive::detect(&head) {
+        report("extracting", size, size, "Extracting…");
+        return archive::extract(kind, temp, dest, filename);
+    }
+    report("saving", size, size, "Saving…");
+    let out_path = dest.join(filename);
+    download::place_file(temp, &out_path)?;
+    Ok((out_path, 1))
+}
 
-    let total = resp.content_length().unwrap_or(0);
-    let mut bytes: Vec<u8> = Vec::with_capacity(total as usize);
-    let mut last_emit: u64 = 0;
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| format!("Download interrupted: {}", e))?
-    {
-        bytes.extend_from_slice(&chunk);
-        let received = bytes.len() as u64;
-        if received - last_emit >= 256 * 1024 || (total > 0 && received >= total) {
-            last_emit = received;
-            on_progress(received, total);
+/// Most files a shared Drive folder may hold before we refuse it — a song is
+/// a dozen files; hundreds means someone shared a whole library.
+const DRIVE_FOLDER_MAX_FILES: usize = 100;
+
+/// Download a public Google Drive folder into `dest/<folder name>/`, keeping
+/// its subfolders. A folder holding a single subfolder is unwrapped first, and
+/// one holding a single file (often a zip or CON) is handled like a file link.
+async fn download_drive_folder(
+    report: Report<'_>,
+    client: &Client,
+    file_id: &str,
+    folder_id: &str,
+    dest: &Path,
+) -> Result<(PathBuf, usize), String> {
+    let (mut title, mut items) = hosts::list_drive_folder(client, folder_id).await?;
+    for _ in 0..3 {
+        if items.len() == 1 && items[0].is_folder {
+            let only = items.remove(0);
+            title = only.name;
+            items = hosts::list_drive_folder(client, &only.id).await?.1;
+        } else {
+            break;
         }
     }
-
-    Ok((bytes, filename))
-}
-
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
+    if items.is_empty() {
+        return Err(
+            "This Google Drive folder is empty (or private). Use Open ↗ to check it in your browser.".into(),
+        );
     }
-}
+    if items.len() == 1 {
+        let item = &items[0];
+        let temp = TempFile::new(file_id)?;
+        let fetched = fetch_external_file(client, &hosts::drive_file_url(&item.id), temp.path(), &|r, t| {
+            report("downloading", r, t, "Downloading…");
+        })
+        .await?;
+        let name = download::sanitize_filename(Some(item.name.clone()), file_id);
+        return install_payload(report, temp.path(), &name, dest, fetched.size, hosts::DRIVE_UNAVAILABLE);
+    }
 
-/// Minimal percent-decoder for filenames pulled out of URLs/headers.
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(h), Some(l)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
-                out.push(h * 16 + l);
-                i += 3;
-                continue;
+    // Walk subfolders (a few levels deep) into a flat list of files.
+    let mut files: Vec<(PathBuf, String)> = Vec::new();
+    let mut pending: Vec<(PathBuf, Vec<hosts::DriveItem>, usize)> = vec![(PathBuf::new(), items, 0)];
+    while let Some((rel, items, depth)) = pending.pop() {
+        for item in items {
+            let path = rel.join(download::sanitize_filename(Some(item.name), &item.id));
+            if !item.is_folder {
+                files.push((path, item.id));
+            } else if depth < 3 {
+                let (_, sub) = hosts::list_drive_folder(client, &item.id).await?;
+                pending.push((path, sub, depth + 1));
+            }
+            if files.len() > DRIVE_FOLDER_MAX_FILES {
+                return Err(format!(
+                    "This Google Drive folder holds more than {} files, so it's probably not a single song. \
+                     Use Open ↗ to pick what you need in your browser.",
+                    DRIVE_FOLDER_MAX_FILES
+                ));
             }
         }
-        out.push(bytes[i]);
-        i += 1;
     }
-    String::from_utf8_lossy(&out).to_string()
-}
 
-/// Parse a filename out of a Content-Disposition header value.
-fn filename_from_disposition(cd: &str) -> Option<String> {
-    let lower = cd.to_ascii_lowercase();
-    if let Some(pos) = lower.find("filename*=") {
-        let val = cd[pos + "filename*=".len()..]
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .trim_matches('"');
-        // RFC 5987: charset'lang'value — take the part after the last ''
-        let encoded = val.rsplit("''").next().unwrap_or(val);
-        let decoded = percent_decode(encoded);
-        if !decoded.is_empty() {
-            return Some(decoded);
+    let target = dest.join(download::sanitize_filename(Some(title), "Google Drive folder"));
+    let created = !target.exists();
+    let total = files.len() as u64;
+    let result: Result<(), String> = async {
+        for (i, (rel, id)) in files.iter().enumerate() {
+            let msg = format!("Downloading file {} of {}…", i + 1, total);
+            report("downloading", i as u64, total, &msg);
+            let temp = TempFile::new(file_id)?;
+            fetch_external_file(client, &hosts::drive_file_url(id), temp.path(), &|_, _| {}).await?;
+            if download::looks_like_html(&download::read_head(temp.path(), 512)) {
+                return Err(hosts::DRIVE_UNAVAILABLE.to_string());
+            }
+            let out = target.join(rel);
+            if let Some(parent) = out.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("Failed to create folder: {}", e))?;
+            }
+            download::place_file(temp.path(), &out)?;
+            tokio::time::sleep(Duration::from_millis(150)).await;
         }
+        Ok(())
     }
-    if let Some(pos) = lower.find("filename=") {
-        let val = cd[pos + "filename=".len()..]
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .trim_matches('"');
-        if !val.is_empty() {
-            return Some(val.to_string());
+    .await;
+    if let Err(e) = result {
+        if created {
+            let _ = fs::remove_dir_all(&target);
         }
+        return Err(e);
     }
-    None
+    Ok((target, files.len()))
 }
 
-/// Reduce a suggested name to a safe basename, falling back to the file_id.
-fn sanitize_filename(name: Option<String>, file_id: &str) -> String {
-    let raw = name.unwrap_or_default();
-    // Keep only the final path component and drop anything unsafe.
-    let base = raw
-        .rsplit(|c| c == '/' || c == '\\')
-        .next()
-        .unwrap_or("")
-        .trim();
-    let cleaned: String = base
-        .chars()
-        .filter(|c| !matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '\0'))
-        .collect();
-    let cleaned = cleaned.trim_matches('.').trim();
-    if cleaned.is_empty() {
-        format!("{}.bin", file_id)
-    } else {
-        cleaned.to_string()
-    }
-}
-
-/// Heuristic: does this payload look like an HTML page (e.g. a sign-in wall)
-/// rather than a real file? Zips start with `PK`, CON/STFS with `CON `/`LIVE`/
-/// `PIRS`, so a leading `<` plus an html-ish tag is a strong signal.
-fn looks_like_html(bytes: &[u8]) -> bool {
-    let head = &bytes[..bytes.len().min(512)];
-    if head.iter().copied().find(|b| !b.is_ascii_whitespace()) != Some(b'<') {
-        return false;
-    }
-    let s = String::from_utf8_lossy(head).to_ascii_lowercase();
-    s.contains("<!doctype") || s.contains("<html") || s.contains("<head") || s.contains("<body")
-}
-
-/// Download one file from RhythmVerse and extract it into `dest_folder`.
+/// Download one file and install it into `dest_folder`.
 ///
-/// Flow: GET the `/download/{file_id}` interstitial (which also sets the
-/// download cookie) → parse the real zip URL out of its redirect script →
-/// wait out the countdown politely → stream the zip → extract → record the
-/// file_id locally so the library badge stays exact.
+/// Self-hosted files go through RhythmVerse's `/download/{file_id}`
+/// interstitial; off-site ones (`external_url`) are resolved per host (Google
+/// Drive file or folder, Mediafire, Dropbox, shorteners). Either way the bytes
+/// stream to a temp file (checked against Content-Length), then get extracted
+/// (zip / 7z / RAR) or saved as a loose package, and the file_id is recorded
+/// locally so the library badge stays exact.
 #[tauri::command]
 pub async fn rv_download(
     app: AppHandle,
@@ -885,6 +876,7 @@ pub async fn rv_download(
     title: Option<String>,
     file_name: Option<String>,
     uploaded: Option<String>,
+    external_url: Option<String>,
 ) -> Result<RvDownloadResult, String> {
     let artist = artist.unwrap_or_default();
     let title = title.unwrap_or_default();
@@ -896,48 +888,77 @@ pub async fn rv_download(
         return Err(format!("Destination folder does not exist: {}", dest_folder));
     }
 
-    emit_progress(&app, &file_id, "starting", 0, 0, "Contacting RhythmVerse…");
+    let source = match external_url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+        None => hosts::Source::RhythmVerse(None),
+        Some(u) => hosts::classify(u).ok_or_else(|| hosts::unsupported_message(u))?,
+    };
+
+    emit_progress(&app, &file_id, "starting", 0, 0, "Starting…");
     let client = build_download_client()?;
+    let report = |phase: &str, received: u64, total: u64, message: &str| {
+        emit_progress(&app, &file_id, phase, received, total, message);
+    };
+    let on_progress = |received, total| report("downloading", received, total, "Downloading…");
 
-    emit_progress(&app, &file_id, "downloading", 0, 0, "Downloading…");
-    let (bytes, filename) = fetch_download(&client, &file_id, &|received, total| {
-        emit_progress(&app, &file_id, "downloading", received, total, "Downloading…");
-    })
-    .await?;
-    let total = bytes.len() as u64;
-
-    // Decide what we got: a zip to extract, or a loose file to save as-is.
-    // RhythmVerse serves both — many YARG/RB customs are raw CON/STFS packages.
-    let (extracted_to, entries) = if bytes.starts_with(b"PK") {
-        emit_progress(&app, &file_id, "extracting", total, total, "Extracting…");
-        extract_zip(&bytes, &dest)?
-    } else if looks_like_html(&bytes) {
-        return Err(
-            "RhythmVerse returned a web page instead of a file — this download may require signing in."
-                .into(),
-        );
-    } else {
-        // Raw package (CON/STFS, .sng, etc.). YARGLE detects these by magic
-        // bytes, so writing the file into the library folder is enough.
-        emit_progress(&app, &file_id, "saving", total, total, "Saving…");
-        let out_path = dest.join(&filename);
-        fs::write(&out_path, &bytes).map_err(|e| format!("Failed to save file: {}", e))?;
-        (out_path, 1)
+    let (extracted_to, entries) = match source {
+        hosts::Source::RhythmVerse(linked_id) => {
+            let rv_id = linked_id.unwrap_or_else(|| file_id.clone());
+            let (file_url, referer) = rv_file_url(&client, &rv_id).await?;
+            emit_progress(&app, &file_id, "downloading", 0, 0, "Downloading…");
+            let temp = TempFile::new(&file_id)?;
+            let fetched = download::fetch_to_file(
+                &client,
+                &file_url,
+                &[("Referer", referer.as_str())],
+                temp.path(),
+                &on_progress,
+            )
+            .await?;
+            let filename = download::sanitize_filename(fetched.filename, &format!("{}.bin", file_id));
+            install_payload(
+                &report,
+                temp.path(),
+                &filename,
+                &dest,
+                fetched.size,
+                "RhythmVerse returned a web page instead of a file — this download may require signing in.",
+            )?
+        }
+        other => match hosts::resolve(&client, other).await? {
+            hosts::Plan::File(url) => {
+                emit_progress(&app, &file_id, "downloading", 0, 0, "Downloading…");
+                let temp = TempFile::new(&file_id)?;
+                let fetched = fetch_external_file(&client, &url, temp.path(), &on_progress).await?;
+                // Off-site hosts don't always name the file; fall back to the
+                // listing's name (CON packages often have no extension at all).
+                let fallback = if file_name.is_empty() { format!("{}.bin", file_id) } else { file_name.clone() };
+                let filename = download::sanitize_filename(fetched.filename, &fallback);
+                install_payload(
+                    &report,
+                    temp.path(),
+                    &filename,
+                    &dest,
+                    fetched.size,
+                    "The link returned a web page instead of a file. Use Open ↗ to download it in your browser.",
+                )?
+            }
+            hosts::Plan::DriveFolder(folder_id) => {
+                download_drive_folder(&report, &client, &file_id, &folder_id, &dest).await?
+            }
+        },
     };
 
     // If an earlier download of this same file landed at a different path
-    // (e.g. the charter renamed the folder in an update), remove the stale
+    // (e.g. the charter renamed the folder in an update), recycle the stale
     // copy so a re-download replaces the song instead of duplicating it.
     if let Some(old) = previous_dest(&app, &file_id) {
         let old_path = PathBuf::from(&old);
         if !old.is_empty() && old_path != extracted_to && old_path.exists() {
-            let removed = if old_path.is_dir() {
-                fs::remove_dir_all(&old_path)
-            } else {
-                fs::remove_file(&old_path)
-            };
-            if let Err(e) = removed {
-                eprintln!("failed to remove previous version {}: {}", old, e);
+            // Recycle Bin only: if the drive has no bin, keep the old copy rather
+            // than deleting it permanently without asking (the duplicate finder
+            // will surface it).
+            if let Err(e) = crate::commands::move_to_trash(&old) {
+                eprintln!("failed to recycle previous version {}: {}", old, e);
             }
         }
     }
@@ -954,13 +975,55 @@ pub async fn rv_download(
         &uploaded,
     );
 
-    emit_progress(&app, &file_id, "done", total, total, "Done");
+    emit_progress(&app, &file_id, "done", 1, 1, "Done");
 
     Ok(RvDownloadResult {
         file_id,
         extracted_to: extracted_to.to_string_lossy().to_string(),
         entries,
     })
+}
+
+/// Finish a "Fix it" re-download: move the broken copy to the Recycle Bin and,
+/// when the new install sits in the same folder under a different name, give
+/// it the broken copy's name so the library layout stays the same. Returns the
+/// song's final path.
+#[tauri::command]
+pub fn rv_replace_broken(app: AppHandle, broken_path: String, new_path: String) -> Result<String, String> {
+    let final_path = replace_broken(&broken_path, &new_path)?;
+    if final_path != new_path {
+        if let Ok(conn) = open_db(&app) {
+            let _ = conn.execute(
+                "UPDATE rv_downloads SET dest_path = ?1 WHERE dest_path = ?2",
+                rusqlite::params![final_path, new_path],
+            );
+        }
+    }
+    Ok(final_path)
+}
+
+/// File half of `rv_replace_broken`: recycle the broken copy, then rename the
+/// new install onto its name when both sit in the same folder.
+fn replace_broken(broken_path: &str, new_path: &str) -> Result<String, String> {
+    // The download landed on top of the broken copy (same folder or file
+    // name), so it already is the replacement.
+    if broken_path.eq_ignore_ascii_case(new_path) {
+        return Ok(new_path.to_string());
+    }
+    let broken = PathBuf::from(broken_path);
+    let new = PathBuf::from(new_path);
+    if broken.exists() {
+        crate::commands::move_to_trash(broken_path).map_err(|e| {
+            format!(
+                "Downloaded the new copy to {}, but couldn't move the broken one to the Recycle Bin ({}).                  Delete it manually.",
+                new_path, e
+            )
+        })?;
+    }
+    if new.parent() == broken.parent() && !broken.exists() && fs::rename(&new, &broken).is_ok() {
+        return Ok(broken_path.to_string());
+    }
+    Ok(new_path.to_string())
 }
 
 fn record_download(

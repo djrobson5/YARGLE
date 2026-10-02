@@ -65,5 +65,6 @@ Stack: [Tauri 2](https://tauri.app/) (Rust backend), React 19 + TypeScript + Vit
 
 - Not affiliated with YARG, RhythmVerse, Harmonix, or Microsoft.
 - RhythmVerse integration uses the site's public endpoints politely (single downloads, honest User-Agent). RhythmVerse indexes freely shared, legal custom charts — support them at [rhythmverse.co](https://rhythmverse.co/).
+- The color palette follows [YARG](https://github.com/YARC-Official/YARG)'s menu design, and the instrument and difficulty icons are YARG's own sprites. UI icons are from [Lucide](https://lucide.dev) (ISC). UI fonts are [Barlow](https://github.com/jpt/barlow) and [Red Hat Display](https://github.com/RedHatOfficial/RedHatFont), both under the SIL Open Font License (see `src/assets/fonts/`).
 - MOGG decryption by [DarkRTA/themethod3](https://github.com/DarkRTA/themethod3); texture decoding via [texture2ddecoder](https://crates.io/crates/texture2ddecoder); MIDI parsing via [midly](https://crates.io/crates/midly).
 - Thanks to the C3 / customs community for two decades of keeping plastic guitars alive.

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { X } from "lucide-react";
 
 interface RenameModalProps {
   paths: string[];
@@ -132,10 +133,10 @@ export function RenameModal({ paths, onClose }: RenameModalProps) {
         <div className="art-search-header">
           <h3>Batch Rename Files</h3>
           <button
-            className="art-search-close"
+            className="art-search-close" aria-label="Close"
             onClick={() => onClose(didRename)}
           >
-            &times;
+            <X size={18} />
           </button>
         </div>
 
@@ -147,9 +148,11 @@ export function RenameModal({ paths, onClose }: RenameModalProps) {
                 based on their DTA metadata. Files will be renamed to{" "}
                 <strong>Artist - Title_rb3con</strong> format.
               </p>
-              <button className="mogg-decrypt-start" onClick={handleScan}>
-                Scan Metadata
-              </button>
+              <div className="dialog-footer">
+                <button className="mogg-decrypt-start" onClick={handleScan}>
+                  Scan Metadata
+                </button>
+              </div>
             </>
           )}
 
@@ -192,12 +195,14 @@ export function RenameModal({ paths, onClose }: RenameModalProps) {
                       {skipNoMetaCount} missing metadata
                     </p>
                   )}
-                  <button
-                    className="mogg-decrypt-start"
-                    onClick={() => onClose(false)}
-                  >
-                    Done
-                  </button>
+                  <div className="dialog-footer">
+                    <button
+                      className="mogg-decrypt-start"
+                      onClick={() => onClose(false)}
+                    >
+                      Done
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <>
@@ -235,9 +240,9 @@ export function RenameModal({ paths, onClose }: RenameModalProps) {
                     ))}
                   </div>
 
-                  <div className="duplicate-actions">
+                  <div className="duplicate-actions dialog-footer">
                     <button
-                      className="duplicate-delete-btn"
+                      className="mogg-decrypt-start"
                       disabled={selected.size === 0 || renaming}
                       onClick={handleRename}
                     >
@@ -285,12 +290,14 @@ export function RenameModal({ paths, onClose }: RenameModalProps) {
                 </div>
               )}
 
-              <button
-                className="mogg-decrypt-start"
-                onClick={() => onClose(didRename)}
-              >
-                Done
-              </button>
+              <div className="dialog-footer">
+                <button
+                  className="mogg-decrypt-start"
+                  onClick={() => onClose(didRename)}
+                >
+                  Done
+                </button>
+              </div>
             </div>
           )}
         </div>

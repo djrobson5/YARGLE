@@ -65,6 +65,12 @@ pub struct SongSummary {
     /// correct even for rows served straight from cache.
     #[serde(default)]
     pub added_at: i64,
+    /// Song artist and title from song.ini / songs.dta (empty if unreadable).
+    /// Deliberately NOT `serde(default)`: scan-cache rows written before these
+    /// existed fail to deserialize and get re-parsed, instead of loading with
+    /// blank names that the duplicate finder would group wrongly.
+    pub artist: String,
+    pub song_title: String,
 }
 
 /// Full details for the metadata editor

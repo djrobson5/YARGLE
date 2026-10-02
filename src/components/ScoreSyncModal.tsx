@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { X } from "lucide-react";
 
 interface ScoreFileInfo {
   exists: boolean;
@@ -97,7 +98,7 @@ export function ScoreSyncModal({ onClose }: ScoreSyncModalProps) {
       <div className="art-search-panel score-sync-panel" onClick={(e) => e.stopPropagation()}>
         <div className="art-search-header">
           <h3>Score Sync</h3>
-          <button className="art-search-close" onClick={onClose}>&times;</button>
+          <button className="art-search-close" onClick={onClose} aria-label="Close" title="Close"><X size={18} /></button>
         </div>
 
         <div className="score-sync-body">
@@ -143,7 +144,7 @@ export function ScoreSyncModal({ onClose }: ScoreSyncModalProps) {
               )}
 
               {!confirm && (
-                <div className="score-sync-actions">
+                <div className="score-sync-actions dialog-footer">
                   <button
                     className="score-sync-btn score-sync-btn-direction"
                     onClick={() => handleSync("stable_to_nightly")}

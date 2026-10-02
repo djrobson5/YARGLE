@@ -174,6 +174,39 @@ impl StfsFilesystem {
     }
 }
 
+/// Seek-based access to a CON package's file table and inner files, for when
+/// several inner files are needed (e.g. `.mid` + `songs.dta`) without reading
+/// the whole multi-MB package or re-parsing the table for each one.
+pub struct StfsReader {
+    file: std::fs::File,
+    vd: VolumeDescriptor,
+    pub files: Vec<FileEntry>,
+}
+
+impl StfsReader {
+    pub fn open(path: &std::path::Path) -> Result<Self, String> {
+        let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+        let vd_end = VOLUME_DESCRIPTOR_OFFSET as usize + 0x25;
+        let mut vd_buf = vec![0u8; vd_end];
+        file.read_exact(&mut vd_buf).map_err(|e| e.to_string())?;
+        let vd = parse_volume_descriptor(&vd_buf)?;
+        let files = parse_file_table_seekable(&mut file, &vd)?;
+        Ok(StfsReader { file, vd, files })
+    }
+
+    /// First non-directory entry whose lowercase name satisfies `pred`.
+    pub fn find(&self, pred: impl Fn(&str) -> bool) -> Option<FileEntry> {
+        self.files
+            .iter()
+            .find(|f| !f.is_directory && pred(&f.name.to_ascii_lowercase()))
+            .cloned()
+    }
+
+    pub fn extract(&mut self, entry: &FileEntry) -> Result<Vec<u8>, String> {
+        extract_file_seekable(&mut self.file, entry, &self.vd)
+    }
+}
+
 /// Extract songs.dta content from a CON file using seek-based I/O.
 /// Only reads the volume descriptor, file table blocks, hash table entries,
 /// and the DTA data blocks — typically ~20-50KB instead of the full file.

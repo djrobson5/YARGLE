@@ -28,4 +28,5 @@ Thumbs.db
 # Claude Code local settings
 .claude/
 CLAUDE.md
+ROADMAP.md
 release/

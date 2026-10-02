@@ -1,5 +1,6 @@
 import React, { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { ImagePlus, Search, X } from "lucide-react";
 
 interface ArtResult {
   url: string;
@@ -14,6 +15,8 @@ interface ImageEditorProps {
   onReplace: (base64: string) => void;
   artist?: string;
   albumName?: string;
+  /** Render only the Replace/Fetch actions (the editor hero shows the art). */
+  buttonsOnly?: boolean;
 }
 
 export function ImageEditor({
@@ -23,6 +26,7 @@ export function ImageEditor({
   onReplace,
   artist,
   albumName,
+  buttonsOnly = false,
 }: ImageEditorProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showSearch, setShowSearch] = useState(false);
@@ -93,23 +97,32 @@ export function ImageEditor({
   };
 
   return (
-    <div className="image-editor">
-      <h3>Album Art</h3>
-      <div className="thumbnail-container">
-        {displayImage ? (
-          <img src={displayImage} alt="Album art" className="thumbnail-preview" />
-        ) : (
-          <div className="thumbnail-placeholder">No image</div>
-        )}
-      </div>
+    <div className={`image-editor${buttonsOnly ? " image-editor-buttons" : ""}`}>
+      {!buttonsOnly && (
+        <>
+          <h3>Album Art</h3>
+          <div className="thumbnail-container">
+            {displayImage ? (
+              <img src={displayImage} alt="Album art" className="thumbnail-preview" />
+            ) : (
+              <div className="thumbnail-placeholder">No image</div>
+            )}
+          </div>
+        </>
+      )}
       <button
         className="replace-btn"
         onClick={() => fileInputRef.current?.click()}
+        title="Replace the header thumbnail (64x64) with an image file"
       >
-        Replace Image
+        <ImagePlus size={14} /> Replace Image
       </button>
-      <button className="replace-btn fetch-art-btn" onClick={openSearch}>
-        Fetch Art
+      <button
+        className="replace-btn fetch-art-btn"
+        onClick={openSearch}
+        title="Search iTunes and MusicBrainz for album art"
+      >
+        <Search size={14} /> Fetch Art
       </button>
       <input
         ref={fileInputRef}
@@ -118,15 +131,15 @@ export function ImageEditor({
         onChange={handleFileSelect}
         style={{ display: "none" }}
       />
-      <p className="image-hint">Replaces header thumbnail (64x64)</p>
+      {!buttonsOnly && <p className="image-hint">Replaces header thumbnail (64x64)</p>}
 
       {showSearch && (
         <div className="art-search-overlay" onClick={() => setShowSearch(false)}>
           <div className="art-search-panel" onClick={(e) => e.stopPropagation()}>
             <div className="art-search-header">
               <h3>Fetch Album Art</h3>
-              <button className="art-search-close" onClick={() => setShowSearch(false)}>
-                &times;
+              <button className="art-search-close" aria-label="Close" onClick={() => setShowSearch(false)}>
+                <X size={18} />
               </button>
             </div>
             <div className="art-search-form">

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { SortMode, UpdateInfo } from "./types";
+import type { FixTarget, SortMode, UpdateInfo } from "./types";
 import { SearchBar } from "./components/SearchBar";
 import { FileList } from "./components/FileList";
 import { MetadataEditor } from "./components/MetadataEditor";
@@ -14,7 +14,9 @@ import { BatchEditModal } from "./components/BatchEditModal";
 import { OrganizeModal } from "./components/OrganizeModal";
 import { ValidatorModal } from "./components/ValidatorModal";
 import { RhythmVerseModal } from "./components/RhythmVerseModal";
+import { LogoLockup } from "./components/Logo";
 import { useSongFiles } from "./hooks/useSongFiles";
+import { X } from "lucide-react";
 
 function App() {
   const {
@@ -61,6 +63,14 @@ function App() {
   // The RhythmVerse modal stays mounted while minimized so browsing state
   // (query, page, scroll) survives; this flag just hides it visually.
   const [rvMinimized, setRvMinimized] = useState(false);
+  // "Fix it": a broken song being replaced through the chart browser.
+  const [fixTarget, setFixTarget] = useState<FixTarget | null>(null);
+  const startFix = (target: FixTarget) => {
+    setFixTarget(target);
+    setShowValidator(false);
+    setShowRhythmVerse(true);
+    setRvMinimized(false);
+  };
   const [currentFolder, setCurrentFolder] = useState<string | null>(null);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   // Non-null while a one-click self-update is in flight.
@@ -319,7 +329,7 @@ function App() {
                     onClick={() => setUpdate(null)}
                     title="Dismiss"
                   >
-                    &times;
+                    <X size={18} />
                   </button>
                 </>
               )}
@@ -344,14 +354,22 @@ function App() {
             onUpdateThumbnail={updateThumbnail}
             onSave={saveSong}
             onDelete={deleteSong}
+            onFixBroken={() =>
+              startFix({
+                path: details.path,
+                name: details.display_name,
+                artist: details.metadata.artist,
+                title: details.metadata.name,
+              })
+            }
             hasChanges={modifiedFields.size > 0}
             saving={saving}
           />
         )}
         {!details && !loading && (
           <div className="empty-state">
-            <h2>YARGLE</h2>
-            <p>YARG Song Metadata Editor</p>
+            <LogoLockup size={88} />
+            <p className="empty-state-tagline">Song library editor for YARG</p>
             <p className="hint">
               {songs.length > 0
                 ? "Select a song from the list to edit its metadata"
@@ -371,7 +389,8 @@ function App() {
       )}
       {showDuplicates && (
         <DuplicateModal
-          paths={songs.map((s) => s.path)}
+          songs={songs}
+          rootFolder={currentFolder}
           onClose={(deleted) => {
             setShowDuplicates(false);
             if (deleted && currentFolder) {
@@ -407,6 +426,14 @@ function App() {
         <ValidatorModal
           paths={songs.map((s) => s.path)}
           onClose={() => setShowValidator(false)}
+          onFixBroken={(song) =>
+            startFix({
+              path: song.path,
+              name: song.display_name,
+              artist: song.artist,
+              title: song.title,
+            })
+          }
         />
       )}
       {showRhythmVerse && (
@@ -416,12 +443,15 @@ function App() {
           minimized={rvMinimized}
           onMinimize={() => setRvMinimized(true)}
           onRestore={() => setRvMinimized(false)}
+          fixTarget={fixTarget}
+          onFixEnd={() => setFixTarget(null)}
           onLibraryChanged={() => {
             if (currentFolder) openFolder(currentFolder);
           }}
           onClose={() => {
             setShowRhythmVerse(false);
             setRvMinimized(false);
+            setFixTarget(null);
           }}
         />
       )}

@@ -1,7 +1,7 @@
 {
   "name": "yargle",
   "private": true,
-  "version": "0.61.0",
+  "version": "0.80.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,6 +12,7 @@
   "dependencies": {
     "@tauri-apps/api": "^2.5.0",
     "@tauri-apps/plugin-dialog": "^2.2.3",
+    "lucide-react": "^1.49.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-window": "^1.8.11"

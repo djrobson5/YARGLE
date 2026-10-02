@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import type { SongMetadata } from "../types";
 import sourcesData from "../data/sources.json";
+import { X } from "lucide-react";
 
 interface BatchEditModalProps {
   paths: string[];
@@ -251,7 +252,7 @@ export function BatchEditModal({ paths, isSelection, onClose }: BatchEditModalPr
               <img src={`/icons/${selectedOriginInfo.icon}.png`} alt="" />
               <span>{selectedOriginInfo.name}</span>
               <span className="origin-picker-id">({selectedOriginInfo.id})</span>
-              <button className="origin-picker-clear" onClick={() => setNewValue("")}>&times;</button>
+              <button className="origin-picker-clear" onClick={() => setNewValue("")} aria-label="Clear"><X size={14} /></button>
             </div>
           )}
           <input
@@ -297,10 +298,10 @@ export function BatchEditModal({ paths, isSelection, onClose }: BatchEditModalPr
         <div className="art-search-header">
           <h3>Batch Edit Metadata</h3>
           <button
-            className="art-search-close"
+            className="art-search-close" aria-label="Close"
             onClick={() => onClose(didEdit)}
           >
-            &times;
+            <X size={18} />
           </button>
         </div>
 
@@ -337,13 +338,15 @@ export function BatchEditModal({ paths, isSelection, onClose }: BatchEditModalPr
                   {renderValueInput()}
                 </div>
               </div>
-              <button
-                className="mogg-decrypt-start"
-                onClick={handleScan}
-                disabled={!newValue && field !== "game_origin" && field !== "sub_genre" && field !== "author"}
-              >
-                Scan Files
-              </button>
+              <div className="dialog-footer">
+                <button
+                  className="mogg-decrypt-start"
+                  onClick={handleScan}
+                  disabled={!newValue && field !== "game_origin" && field !== "sub_genre" && field !== "author"}
+                >
+                  Scan Files
+                </button>
+              </div>
             </>
           )}
 
@@ -388,12 +391,14 @@ export function BatchEditModal({ paths, isSelection, onClose }: BatchEditModalPr
               {changeCount === 0 ? (
                 <div className="duplicate-no-results">
                   <p>All files already have this value.</p>
-                  <button
-                    className="mogg-decrypt-start"
-                    onClick={() => onClose(false)}
-                  >
-                    Done
-                  </button>
+                  <div className="dialog-footer">
+                    <button
+                      className="mogg-decrypt-start"
+                      onClick={() => onClose(false)}
+                    >
+                      Done
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <>
@@ -447,9 +452,9 @@ export function BatchEditModal({ paths, isSelection, onClose }: BatchEditModalPr
                     })}
                   </div>
 
-                  <div className="duplicate-actions">
+                  <div className="duplicate-actions dialog-footer">
                     <button
-                      className="duplicate-delete-btn"
+                      className="mogg-decrypt-start"
                       disabled={selected.size === 0}
                       onClick={handleApply}
                     >
@@ -503,12 +508,14 @@ export function BatchEditModal({ paths, isSelection, onClose }: BatchEditModalPr
                 </div>
               )}
 
-              <button
-                className="mogg-decrypt-start"
-                onClick={() => onClose(didEdit)}
-              >
-                Done
-              </button>
+              <div className="dialog-footer">
+                <button
+                  className="mogg-decrypt-start"
+                  onClick={() => onClose(didEdit)}
+                >
+                  Done
+                </button>
+              </div>
             </div>
           )}
         </div>

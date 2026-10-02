@@ -154,7 +154,7 @@ fn parse_song_entry(file_path: &Path) -> Option<SongSummary> {
     if file_path.is_dir() {
         // Unpacked song folder
         let ini_path = file_path.join("song.ini");
-        let content = fs::read_to_string(&ini_path).ok()?;
+        let content = song_ini::read_song_ini(&ini_path).ok()?;
         let meta = song_ini::parse_song_ini(&content);
         let loading_phrase = song_ini::extract_loading_phrase(&content);
         let display_name = if !meta.name.is_empty() && !meta.artist.is_empty() {
@@ -174,6 +174,8 @@ fn parse_song_entry(file_path: &Path) -> Option<SongSummary> {
             path: file_path.to_string_lossy().to_string(),
             display_name,
             description,
+            artist: meta.artist,
+            song_title: meta.name.clone(),
             title_name: meta.name,
             has_thumbnail: find_folder_album_art(file_path).is_some(),
             is_folder: true,
@@ -187,7 +189,7 @@ fn parse_song_entry(file_path: &Path) -> Option<SongSummary> {
         let data = read_header_bytes(file_path).ok()?;
         let header = parse_header_summary(&data).ok()?;
         // Extract DTA metadata using seek-based I/O
-        let (album_name, author, game_origin) =
+        let (album_name, author, game_origin, artist, song_title) =
             filesystem::extract_dta_from_file(file_path)
                 .ok()
                 .and_then(|dta_content| {
@@ -202,7 +204,7 @@ fn parse_song_entry(file_path: &Path) -> Option<SongSummary> {
                     };
                     let nodes = parse_dta(&raw_dta).ok()?;
                     let meta = extract_metadata(&nodes, &raw_dta);
-                    Some((meta.album_name, meta.author, meta.game_origin))
+                    Some((meta.album_name, meta.author, meta.game_origin, meta.artist, meta.name))
                 })
                 .unwrap_or_default();
         Some(SongSummary {
@@ -216,6 +218,8 @@ fn parse_song_entry(file_path: &Path) -> Option<SongSummary> {
             author,
             game_origin,
             added_at: 0, // set by open_folder from the entry's mtime
+            artist,
+            song_title,
         })
     }
 }
@@ -254,7 +258,14 @@ pub async fn open_folder(app: AppHandle, path: String) -> Result<Vec<SongSummary
         let key = entry.path.to_string_lossy().to_string();
         seen.insert(key.clone());
         match cache.get(&key) {
-            Some(row) if row.mtime == entry.mtime && row.size == entry.size => {
+            // A folder is only scanned because it holds song.ini, so a cached
+            // "not a song" for one means an earlier parse failure (e.g. the
+            // old strict-UTF-8 read): retry it rather than hiding it forever.
+            Some(row)
+                if row.mtime == entry.mtime
+                    && row.size == entry.size
+                    && (row.summary.is_some() || !entry.is_dir) =>
+            {
                 if let Some(summary) = &row.summary {
                     let mut s = summary.clone();
                     s.added_at = row.mtime; // authoritative, even for old cache blobs
@@ -344,7 +355,7 @@ pub fn get_song_details(path: String) -> Result<SongDetails, String> {
     // Unpacked song folder
     if p.is_dir() {
         let ini_path = p.join("song.ini");
-        let content = fs::read_to_string(&ini_path)
+        let content = song_ini::read_song_ini(&ini_path)
             .map_err(|e| format!("Failed to read song.ini: {}", e))?;
         let metadata = song_ini::parse_song_ini(&content);
         let loading_phrase = song_ini::extract_loading_phrase(&content);
@@ -362,7 +373,8 @@ pub fn get_song_details(path: String) -> Result<SongDetails, String> {
 
         let ini_size = fs::metadata(&ini_path).map(|m| m.len() as u32).unwrap_or(0);
         let has_thumb = !thumbnail_base64.is_empty();
-        let validation_issues = validate_metadata(&metadata, has_thumb);
+        let mut validation_issues = content_issues(p);
+        validation_issues.extend(validate_metadata(&metadata, has_thumb));
 
         return Ok(SongDetails {
             path,
@@ -421,7 +433,8 @@ pub fn get_song_details(path: String) -> Result<SongDetails, String> {
     let nodes = parse_dta(&raw_dta)?;
     let metadata = extract_metadata(&nodes, &raw_dta);
     let has_thumb = header.thumbnail_size > 0;
-    let validation_issues = validate_metadata(&metadata, has_thumb);
+    let mut validation_issues = content_issues(Path::new(&path));
+    validation_issues.extend(validate_metadata(&metadata, has_thumb));
 
     Ok(SongDetails {
         path,
@@ -450,7 +463,7 @@ pub fn save_song(
     // Unpacked song folder
     if p.is_dir() {
         let ini_path = p.join("song.ini");
-        let original = fs::read_to_string(&ini_path).unwrap_or_default();
+        let original = song_ini::read_song_ini(&ini_path).unwrap_or_default();
 
         if let Some(meta) = &metadata {
             let new_content = song_ini::serialize_song_ini(
@@ -1017,242 +1030,39 @@ pub fn path_is_dir(path: String) -> bool {
     Path::new(&path).is_dir()
 }
 
-// --- Duplicate Detection ---
-
-#[derive(Serialize, Clone)]
-pub struct DuplicateEntry {
-    pub path: String,
-    pub display_name: String,
-    pub description: String,
-    pub file_size: u64,
-    pub has_drums: bool,
-    pub has_guitar: bool,
-    pub has_bass: bool,
-    pub has_vocals: bool,
-    pub has_keys: bool,
+#[derive(Serialize)]
+pub struct DeleteResult {
+    /// Paths that couldn't be removed at all, as "path: error".
+    pub failures: Vec<String>,
+    /// Paths the Recycle Bin refused (some USB and network drives have no bin).
+    /// Left untouched; the UI asks before retrying them with `permanent`.
+    pub not_trashable: Vec<String>,
 }
 
-#[derive(Serialize, Clone)]
-pub struct DuplicateGroup {
-    pub shortname: String,
-    pub display_name: String,
-    pub entries: Vec<DuplicateEntry>,
-}
-
-#[derive(Serialize, Clone)]
-struct DuplicateScanProgress {
-    current: usize,
-    total: usize,
-    phase: String,
-}
-
-fn normalize_name(s: &str) -> String {
-    s.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+/// Move a file or folder to the Recycle Bin. `trash` canonicalizes the path and
+/// strips the `\\?\` prefix itself, so long-path form is fine to pass in.
+pub(crate) fn move_to_trash(path: &str) -> Result<(), String> {
+    trash::delete(to_win_long_path(path)).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn find_duplicates(
-    app: AppHandle,
-    paths: Vec<String>,
-) -> Result<Vec<DuplicateGroup>, String> {
-    use std::collections::HashMap;
-
-    let total = paths.len();
-
-    // Phase 1: Group by normalized display_name
-    let _ = app.emit(
-        "duplicate-scan-progress",
-        DuplicateScanProgress { current: 0, total, phase: "Grouping by name...".into() },
-    );
-
-    let mut name_groups: HashMap<String, Vec<(String, String, String, u64)>> = HashMap::new();
-    for (i, path) in paths.iter().enumerate() {
-        let p = Path::new(path);
-        let file_size = fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-        if p.is_dir() {
-            if let Ok(content) = fs::read_to_string(p.join("song.ini")) {
-                let meta = song_ini::parse_song_ini(&content);
-                let display_name = if !meta.name.is_empty() && !meta.artist.is_empty() {
-                    format!("{} - {}", meta.artist, meta.name)
-                } else if !meta.name.is_empty() {
-                    meta.name.clone()
-                } else {
-                    p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
-                };
-                let key = normalize_name(&display_name);
-                let description = song_ini::extract_loading_phrase(&content);
-                name_groups.entry(key).or_default().push((
-                    path.clone(),
-                    display_name,
-                    description,
-                    file_size,
-                ));
-            }
-        } else if let Ok(data) = read_header_bytes(p) {
-            if let Ok(header) = parse_header_summary(&data) {
-                let key = normalize_name(&header.display_name);
-                name_groups.entry(key).or_default().push((
-                    path.clone(),
-                    header.display_name,
-                    header.description,
-                    file_size,
-                ));
-            }
-        }
-        if (i + 1) % 10 == 0 || i + 1 == total {
-            let _ = app.emit(
-                "duplicate-scan-progress",
-                DuplicateScanProgress {
-                    current: i + 1,
-                    total,
-                    phase: "Grouping by name...".into(),
-                },
-            );
-        }
-    }
-
-    // Keep only groups with 2+ entries
-    let candidate_groups: Vec<_> = name_groups
-        .into_iter()
-        .filter(|(_, v)| v.len() > 1)
-        .collect();
-
-    if candidate_groups.is_empty() {
-        return Ok(vec![]);
-    }
-
-    // Phase 2: Verify with DTA shortname
-    let candidates_flat: Vec<_> = candidate_groups
-        .iter()
-        .flat_map(|(_, entries)| entries.iter())
-        .collect();
-    let verify_total = candidates_flat.len();
-
-    let _ = app.emit(
-        "duplicate-scan-progress",
-        DuplicateScanProgress {
-            current: 0,
-            total: verify_total,
-            phase: "Verifying with DTA...".into(),
-        },
-    );
-
-    // Build path -> shortname map and path -> instruments map
-    let mut shortname_map: HashMap<String, String> = HashMap::new();
-    let mut instruments_map: HashMap<String, (bool, bool, bool, bool, bool)> = HashMap::new();
-    for (i, (path, _, _, _)) in candidates_flat.iter().enumerate() {
-        let p = Path::new(path.as_str());
-        if p.is_dir() {
-            // For song folders, use the song name as shortname
-            if let Ok(content) = fs::read_to_string(p.join("song.ini")) {
-                let meta = song_ini::parse_song_ini(&content);
-                if !meta.name.is_empty() {
-                    shortname_map.insert(path.clone(), meta.name.to_lowercase().replace(' ', ""));
-                }
-                instruments_map.insert(path.clone(), (
-                    meta.rank_drum.map_or(false, |r| r > 0),
-                    meta.rank_guitar.map_or(false, |r| r > 0),
-                    meta.rank_bass.map_or(false, |r| r > 0),
-                    meta.rank_vocals.map_or(false, |r| r > 0),
-                    meta.rank_keys.map_or(false, |r| r > 0),
-                ));
-            }
-        } else if let Ok(data) = read_file(path) {
-            if let Ok(stfs) = StfsFilesystem::parse(data) {
-                if let Ok((dta_content, _)) = stfs.extract_songs_dta() {
-                    let raw_dta = match String::from_utf8(dta_content.clone()) {
-                        Ok(s) => s,
-                        Err(_) => {
-                            let (decoded, _, _) = encoding_rs::WINDOWS_1252.decode(&dta_content);
-                            decoded.to_string()
-                        }
-                    };
-                    if let Ok(nodes) = parse_dta(&raw_dta) {
-                        let meta = extract_metadata(&nodes, &raw_dta);
-                        if !meta.shortname.is_empty() {
-                            shortname_map.insert(path.clone(), meta.shortname);
-                        }
-                        instruments_map.insert(path.clone(), (
-                            meta.rank_drum.map_or(false, |r| r > 0),
-                            meta.rank_guitar.map_or(false, |r| r > 0),
-                            meta.rank_bass.map_or(false, |r| r > 0),
-                            meta.rank_vocals.map_or(false, |r| r > 0),
-                            meta.rank_keys.map_or(false, |r| r > 0),
-                        ));
-                    }
-                }
-            }
-        }
-        if (i + 1) % 5 == 0 || i + 1 == verify_total {
-            let _ = app.emit(
-                "duplicate-scan-progress",
-                DuplicateScanProgress {
-                    current: i + 1,
-                    total: verify_total,
-                    phase: "Verifying with DTA...".into(),
-                },
-            );
-        }
-    }
-
-    // Re-group by shortname (or fall back to normalized display_name)
-    let mut final_groups: HashMap<String, Vec<(String, String, String, u64)>> = HashMap::new();
-    for (_, entries) in &candidate_groups {
-        for (path, display_name, description, file_size) in entries {
-            let key = shortname_map
-                .get(path)
-                .cloned()
-                .unwrap_or_else(|| normalize_name(display_name));
-            final_groups
-                .entry(key)
-                .or_default()
-                .push((path.clone(), display_name.clone(), description.clone(), *file_size));
-        }
-    }
-
-    // Build result, keeping only groups with 2+
-    let mut result: Vec<DuplicateGroup> = final_groups
-        .into_iter()
-        .filter(|(_, v)| v.len() > 1)
-        .map(|(shortname, entries)| {
-            let display_name = entries[0].1.clone();
-            let entries = entries
-                .into_iter()
-                .map(|(path, display_name, description, file_size)| {
-                    let (has_drums, has_guitar, has_bass, has_vocals, has_keys) =
-                        instruments_map.get(&path).copied().unwrap_or_default();
-                    DuplicateEntry {
-                        path,
-                        display_name,
-                        description,
-                        file_size,
-                        has_drums,
-                        has_guitar,
-                        has_bass,
-                        has_vocals,
-                        has_keys,
-                    }
-                })
-                .collect();
-            DuplicateGroup {
-                shortname,
-                display_name,
-                entries,
-            }
-        })
-        .collect();
-
-    result.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
-
-    Ok(result)
-}
-
-#[tauri::command]
-pub fn delete_files(paths: Vec<String>) -> Result<Vec<String>, String> {
+pub fn delete_files(paths: Vec<String>, permanent: Option<bool>) -> Result<DeleteResult, String> {
+    let permanent = permanent.unwrap_or(false);
     let mut failures = Vec::new();
+    let mut not_trashable = Vec::new();
     for path in &paths {
         let long_path = to_win_long_path(path);
         let p = Path::new(&long_path);
+        if !p.exists() {
+            failures.push(format!("{}: file not found", path));
+            continue;
+        }
+        if !permanent {
+            if move_to_trash(path).is_err() {
+                not_trashable.push(path.clone());
+            }
+            continue;
+        }
         let result = if p.is_dir() {
             fs::remove_dir_all(&long_path)
         } else {
@@ -1262,7 +1072,7 @@ pub fn delete_files(paths: Vec<String>) -> Result<Vec<String>, String> {
             failures.push(format!("{}: {}", path, e));
         }
     }
-    Ok(failures)
+    Ok(DeleteResult { failures, not_trashable })
 }
 
 // --- MOGG Decrypt ---
@@ -1486,43 +1296,11 @@ pub async fn preview_renames(
     Ok(previews)
 }
 
-fn extract_artist_album(path: &str) -> Option<(String, String, String)> {
-    let p = Path::new(path);
-
-    let meta = if p.is_dir() {
-        let content = fs::read_to_string(p.join("song.ini")).ok()?;
-        song_ini::parse_song_ini(&content)
-    } else {
-        let data = read_file(path).ok()?;
-        let stfs = StfsFilesystem::parse(data).ok()?;
-        let (dta_content, _) = stfs.extract_songs_dta().ok()?;
-        let raw_dta = match String::from_utf8(dta_content.clone()) {
-            Ok(s) => s,
-            Err(_) => {
-                let (decoded, _, _) = encoding_rs::WINDOWS_1252.decode(&dta_content);
-                decoded.to_string()
-            }
-        };
-        let nodes = parse_dta(&raw_dta).ok()?;
-        extract_metadata(&nodes, &raw_dta)
-    };
-
-    if meta.artist.is_empty() && meta.name.is_empty() && meta.album_name.is_empty() {
-        return None;
-    }
-
-    let artist = if meta.artist.is_empty() { "Unknown Artist".to_string() } else { meta.artist };
-    let name = if meta.name.is_empty() { "Unknown Song".to_string() } else { meta.name };
-    let album = if meta.album_name.is_empty() { "Unknown Album".to_string() } else { meta.album_name };
-
-    Some((artist, name, album))
-}
-
 fn extract_artist_name(path: &str) -> Option<(String, String)> {
     let p = Path::new(path);
 
     let meta = if p.is_dir() {
-        let content = fs::read_to_string(p.join("song.ini")).ok()?;
+        let content = song_ini::read_song_ini(&p.join("song.ini")).ok()?;
         song_ini::parse_song_ini(&content)
     } else {
         let data = read_file(path).ok()?;
@@ -1642,7 +1420,7 @@ pub async fn batch_get_field(
             .unwrap_or_else(|| path.clone());
 
         let meta_opt: Option<SongMetadata> = if p.is_dir() {
-            fs::read_to_string(p.join("song.ini"))
+            song_ini::read_song_ini(&p.join("song.ini"))
                 .ok()
                 .map(|content| song_ini::parse_song_ini(&content))
         } else if let Ok(data) = read_file(path) {
@@ -1805,11 +1583,14 @@ fn decrypt_mogg_in_con(path: &str) -> Result<DecryptStatus, String> {
 pub struct OrganizePreview {
     pub path: String,
     pub filename: String,
-    pub artist: String,
-    pub album: String,
+    /// Rendered subfolders, `/`-separated (empty = directly in the base folder).
     pub target_folder: String,
+    /// Rendered song name: the folder name, or the file name for a CON.
+    pub target_name: String,
     pub target_path: String,
-    pub status: String, // "move", "skip_same", "skip_no_metadata"
+    pub status: String, // "move", "skip_same", "skip_no_metadata", "skip_template"
+    /// Why the song was skipped (template errors), else empty.
+    pub note: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -1818,85 +1599,140 @@ struct OrganizePreviewProgress {
     total: usize,
 }
 
+/// Song metadata for Organize: song.ini for folders, songs.dta for CONs (read
+/// seek-based from the package, not the whole multi-MB file).
+fn read_song_metadata(p: &Path) -> Option<SongMetadata> {
+    if p.is_dir() {
+        let content = song_ini::read_song_ini(&p.join("song.ini")).ok()?;
+        return Some(song_ini::parse_song_ini(&content));
+    }
+    let dta = filesystem::extract_dta_from_file(p).ok()?;
+    let raw = match String::from_utf8(dta) {
+        Ok(s) => s,
+        Err(e) => encoding_rs::WINDOWS_1252.decode(e.as_bytes()).0.into_owned(),
+    };
+    let nodes = parse_dta(&raw).ok()?;
+    Some(extract_metadata(&nodes, &raw))
+}
+
+fn preview_one(path: &str, base: &Path, template: &str) -> OrganizePreview {
+    use crate::folder_template::{render, TemplateValues};
+    let p = Path::new(path);
+    let filename = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let skipped = |status: &str, note: String| OrganizePreview {
+        path: path.to_string(),
+        filename: filename.clone(),
+        target_folder: String::new(),
+        target_name: String::new(),
+        target_path: String::new(),
+        status: status.into(),
+        note,
+    };
+    let Some(meta) = read_song_metadata(p) else {
+        return skipped("skip_no_metadata", String::new());
+    };
+    if meta.artist.is_empty() && meta.name.is_empty() && meta.album_name.is_empty() {
+        return skipped("skip_no_metadata", String::new());
+    }
+    let (dirs, name) = match render(template, &TemplateValues::from_metadata(&meta, &filename)) {
+        Ok(r) => r,
+        Err(e) => return skipped("skip_template", e),
+    };
+    let mut target = base.to_path_buf();
+    for d in &dirs {
+        target.push(d);
+    }
+    target.push(&name);
+
+    // Windows paths are case-insensitive; a song already at its target stays put.
+    let norm = |q: &Path| q.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    let current = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let wanted = target.canonicalize().unwrap_or_else(|_| target.clone());
+    let same = norm(p) == norm(&target) || norm(&current) == norm(&wanted);
+    OrganizePreview {
+        path: path.to_string(),
+        filename,
+        target_folder: dirs.join("/"),
+        target_name: name,
+        target_path: target.to_string_lossy().to_string(),
+        status: if same { "skip_same" } else { "move" }.into(),
+        note: String::new(),
+    }
+}
+
 #[tauri::command]
 pub async fn preview_organize(
     app: AppHandle,
     paths: Vec<String>,
     base_folder: String,
+    template: Option<String>,
 ) -> Result<Vec<OrganizePreview>, String> {
+    use rayon::prelude::*;
+
+    let template = template
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| crate::folder_template::DEFAULT_TEMPLATE.to_string());
+    crate::folder_template::validate(&template)?;
+
     let total = paths.len();
-    let mut previews = Vec::new();
-
-    for (i, path) in paths.iter().enumerate() {
-        let p = Path::new(path);
-        let filename = p
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let preview = match extract_artist_album(path) {
-            Some((artist, _name, album)) => {
-                let safe_artist = sanitize_filename(&artist);
-                let safe_album = sanitize_filename(&album);
-                let target_folder = format!("{}/{}", safe_artist, safe_album);
-
-                // Use the user's opened folder as the base, not the file's parent
-                let base = Path::new(&base_folder);
-                let target_dir = base.join(&safe_artist).join(&safe_album);
-                let target_path = target_dir.join(&filename);
-                let target_path_str = target_path.to_string_lossy().to_string();
-
-                // Check if already in correct location
-                let canonical_current = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-                let canonical_target = target_path
-                    .canonicalize()
-                    .unwrap_or_else(|_| target_path.clone());
-
-                if canonical_current == canonical_target {
-                    OrganizePreview {
-                        path: path.clone(),
-                        filename,
-                        artist: safe_artist,
-                        album: safe_album,
-                        target_folder,
-                        target_path: target_path_str,
-                        status: "skip_same".into(),
-                    }
-                } else {
-                    OrganizePreview {
-                        path: path.clone(),
-                        filename,
-                        artist: safe_artist,
-                        album: safe_album,
-                        target_folder,
-                        target_path: target_path_str,
-                        status: "move".into(),
-                    }
-                }
-            }
-            None => OrganizePreview {
-                path: path.clone(),
-                filename,
-                artist: String::new(),
-                album: String::new(),
-                target_folder: String::new(),
-                target_path: String::new(),
-                status: "skip_no_metadata".into(),
-            },
-        };
-        previews.push(preview);
-
-        if (i + 1) % 5 == 0 || i + 1 == total {
-            let _ = app.emit(
-                "organize-preview-progress",
-                OrganizePreviewProgress {
-                    current: i + 1,
-                    total,
-                },
-            );
-        }
+    let base = PathBuf::from(&base_folder);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut previews = Vec::with_capacity(total);
+    for chunk in paths.chunks(100) {
+        let part: Vec<OrganizePreview> =
+            pool.install(|| chunk.par_iter().map(|path| preview_one(path, &base, &template)).collect());
+        previews.extend(part);
+        let _ = app.emit(
+            "organize-preview-progress",
+            OrganizePreviewProgress { current: previews.len(), total },
+        );
+        tokio::task::yield_now().await;
     }
 
+    // Flag songs that render to the same target as another one: the move gives
+    // them a " (2)" suffix, which the user should see before committing.
+    let mut taken: std::collections::HashSet<String> = previews
+        .iter()
+        .filter(|p| p.status == "skip_same")
+        .map(|p| p.target_path.to_lowercase())
+        .collect();
+    for p in previews.iter_mut().filter(|p| p.status == "move") {
+        if !taken.insert(p.target_path.to_lowercase()) {
+            p.note = "Same target as another song; it will get a \" (2)\" suffix".into();
+        }
+    }
     Ok(previews)
+}
+
+/// Live preview for the template editor: render `template` for one song
+/// (`path`), or for a sample song when none is given. Returns the relative
+/// target, e.g. `Rock/Sonic Youth/Sonic Youth - Candle`.
+#[tauri::command]
+pub fn render_organize_template(template: String, path: Option<String>) -> Result<String, String> {
+    use crate::folder_template::{render, TemplateValues};
+    let values = path
+        .as_deref()
+        .and_then(|p| {
+            let p = Path::new(p);
+            let original = p.file_name()?.to_string_lossy().to_string();
+            read_song_metadata(p).map(|m| TemplateValues::from_metadata(&m, &original))
+        })
+        .unwrap_or_else(|| TemplateValues {
+            artist: "Sonic Youth".into(),
+            title: "Candle".into(),
+            album: "Daydream Nation".into(),
+            genre: "Alternative".into(),
+            year: "1988".into(),
+            charter: "Harmonix".into(),
+            original: "candle_rb3con".into(),
+        });
+    let (dirs, name) = render(&template, &values)?;
+    let mut parts = dirs;
+    parts.push(name);
+    Ok(parts.join("/"))
 }
 
 #[derive(Deserialize)]
@@ -2017,6 +1853,9 @@ pub fn execute_organize(requests: Vec<OrganizeRequest>, base_folder: String) -> 
 pub struct SongValidationResult {
     pub path: String,
     pub display_name: String,
+    /// Artist / title for "Fix it" (pre-searching the chart browser).
+    pub artist: String,
+    pub title: String,
     pub issues: Vec<ValidationIssue>,
 }
 
@@ -2036,93 +1875,138 @@ struct BatchValidateProgress {
     total: usize,
 }
 
+/// Audio a song folder can play from.
+const AUDIO_EXTS: &[&str] = &["ogg", "opus", "mp3", "wav", "flac", "m4a", "mogg"];
+
+/// Field name for file-level problems that stop a song from playing at all.
+/// The validator offers "Fix it" (re-download) for issues with this field.
+pub const BROKEN_FIELD: &str = "broken";
+
+fn broken(message: &str) -> ValidationIssue {
+    ValidationIssue {
+        level: crate::dta::types::ValidationLevel::Error,
+        field: BROKEN_FIELD.into(),
+        message: message.into(),
+    }
+}
+
+/// Missing chart or audio. Folders: `notes.chart`/`notes.mid` and at least one
+/// audio file next to `song.ini`. CON packages: an inner `.mid` and `.mogg`
+/// (read from the STFS file table only, not the whole package).
+pub(crate) fn content_issues(path: &Path) -> Vec<ValidationIssue> {
+    if path.is_dir() {
+        let Ok(rd) = fs::read_dir(path) else { return vec![] };
+        let names: Vec<String> = rd
+            .flatten()
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .map(|e| e.file_name().to_string_lossy().to_lowercase())
+            .collect();
+        let has_chart = names.iter().any(|n| n == "notes.chart" || n == "notes.mid");
+        let has_audio = names.iter().any(|n| {
+            n.rsplit_once('.').map(|(_, ext)| AUDIO_EXTS.contains(&ext)).unwrap_or(false)
+        });
+        return match (has_chart, has_audio) {
+            (true, true) => vec![],
+            (false, false) => vec![broken("Only song.ini: no chart and no audio files")],
+            (false, true) => vec![broken("No chart file (notes.chart or notes.mid)")],
+            (true, false) => vec![broken("No audio files")],
+        };
+    }
+    match filesystem::StfsReader::open(path) {
+        Err(_) => vec![broken("Couldn't read the package's file list (it may be damaged)")],
+        Ok(reader) => {
+            let mut issues = Vec::new();
+            if reader.find(|n| n.ends_with(".mid")).is_none() {
+                issues.push(broken("No .mid chart inside the package"));
+            }
+            if reader.find(|n| n.ends_with(".mogg")).is_none() {
+                issues.push(broken("No .mogg audio inside the package"));
+            }
+            issues
+        }
+    }
+}
+
+/// Validate one song: (display name, artist, title, issues), or `None` if
+/// its metadata couldn't be parsed at all.
+fn validate_entry(p: &Path) -> Option<(String, String, String, Vec<ValidationIssue>)> {
+    let mut issues = content_issues(p);
+    if p.is_dir() {
+        let content = song_ini::read_song_ini(&p.join("song.ini")).ok()?;
+        let meta = song_ini::parse_song_ini(&content);
+        let display = if !meta.name.is_empty() && !meta.artist.is_empty() {
+            format!("{} - {}", meta.artist, meta.name)
+        } else if !meta.name.is_empty() {
+            meta.name.clone()
+        } else {
+            p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+        };
+        issues.extend(validate_metadata(&meta, find_folder_album_art(p).is_some()));
+        return Some((display, meta.artist, meta.name, issues));
+    }
+
+    let display_and_thumb = read_header_bytes(p)
+        .ok()
+        .and_then(|data| parse_header_summary(&data).ok())
+        .map(|h| (h.display_name, h.thumbnail_size > 0));
+    let meta = filesystem::extract_dta_from_file(p).ok().and_then(|dta| {
+        let raw = match String::from_utf8(dta) {
+            Ok(s) => s,
+            Err(e) => encoding_rs::WINDOWS_1252.decode(e.as_bytes()).0.into_owned(),
+        };
+        parse_dta(&raw).ok().map(|nodes| extract_metadata(&nodes, &raw))
+    });
+    match (display_and_thumb, meta) {
+        (Some((display, has_thumb)), Some(meta)) => {
+            issues.extend(validate_metadata(&meta, has_thumb));
+            Some((display, meta.artist, meta.name, issues))
+        }
+        // An unreadable package is still worth listing when it's broken.
+        (header, _) if !issues.is_empty() => {
+            let display = header
+                .map(|(d, _)| d)
+                .unwrap_or_else(|| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+            Some((display, String::new(), String::new(), issues))
+        }
+        _ => None,
+    }
+}
+
 #[tauri::command]
-pub fn batch_validate(paths: Vec<String>, app: AppHandle) -> Result<BatchValidateResult, String> {
+pub async fn batch_validate(paths: Vec<String>, app: AppHandle) -> Result<BatchValidateResult, String> {
+    use rayon::prelude::*;
+
     let total = paths.len();
     let mut results: Vec<SongValidationResult> = Vec::new();
     let mut parse_failures: usize = 0;
 
-    for (i, path_str) in paths.iter().enumerate() {
-        let _ = app.emit("batch-validate-progress", BatchValidateProgress {
-            current: i + 1,
-            total,
-        });
-
-        let p = Path::new(path_str);
-
-        let validation_result: Option<(String, Vec<ValidationIssue>)> = if p.is_dir() {
-            let ini_path = p.join("song.ini");
-            match fs::read_to_string(&ini_path) {
-                Ok(content) => {
-                    let meta = song_ini::parse_song_ini(&content);
-                    let has_thumb = find_folder_album_art(p).is_some();
-                    let display = if !meta.name.is_empty() && !meta.artist.is_empty() {
-                        format!("{} - {}", meta.artist, meta.name)
-                    } else if !meta.name.is_empty() {
-                        meta.name.clone()
-                    } else {
-                        p.file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default()
-                    };
-                    let issues = validate_metadata(&meta, has_thumb);
-                    Some((display, issues))
-                }
-                Err(_) => None,
-            }
-        } else {
-            match read_file(path_str) {
-                Ok(data) => {
-                    match parse_header(&data) {
-                        Ok(header) => {
-                            let display = header.display_name.clone();
-                            let has_thumb = header.thumbnail_size > 0;
-                            match StfsFilesystem::parse(data) {
-                                Ok(stfs_fs) => match stfs_fs.extract_songs_dta() {
-                                    Ok((dta_content, _)) => {
-                                        let raw_dta = match String::from_utf8(dta_content.clone()) {
-                                            Ok(s) => s,
-                                            Err(_) => {
-                                                let (decoded, _, _) =
-                                                    encoding_rs::WINDOWS_1252.decode(&dta_content);
-                                                decoded.to_string()
-                                            }
-                                        };
-                                        match parse_dta(&raw_dta) {
-                                            Ok(nodes) => {
-                                                let meta = extract_metadata(&nodes, &raw_dta);
-                                                let issues = validate_metadata(&meta, has_thumb);
-                                                Some((display, issues))
-                                            }
-                                            Err(_) => None,
-                                        }
-                                    }
-                                    Err(_) => None,
-                                },
-                                Err(_) => None,
-                            }
-                        }
-                        Err(_) => None,
+    // Same capped pool as the folder scan: more threads just fight over the disk.
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(4)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut done = 0usize;
+    for chunk in paths.chunks(100) {
+        let chunk_results: Vec<(String, Option<(String, String, String, Vec<ValidationIssue>)>)> =
+            pool.install(|| {
+                chunk
+                    .par_iter()
+                    .map(|path| (path.clone(), validate_entry(Path::new(path))))
+                    .collect()
+            });
+        for (path, outcome) in chunk_results {
+            match outcome {
+                Some((display_name, artist, title, issues)) => {
+                    if !issues.is_empty() {
+                        results.push(SongValidationResult { path, display_name, artist, title, issues });
                     }
                 }
-                Err(_) => None,
-            }
-        };
-
-        match validation_result {
-            Some((display_name, issues)) => {
-                if !issues.is_empty() {
-                    results.push(SongValidationResult {
-                        path: path_str.clone(),
-                        display_name,
-                        issues,
-                    });
-                }
-            }
-            None => {
-                parse_failures += 1;
+                None => parse_failures += 1,
             }
         }
+        done += chunk.len();
+        let _ = app.emit("batch-validate-progress", BatchValidateProgress { current: done, total });
+        tokio::task::yield_now().await;
     }
 
     let songs_with_errors = results
@@ -2215,4 +2099,37 @@ fn find_mid_in_dir(dir: &Path) -> Result<PathBuf, String> {
         }
     }
     Err("No .mid file found in song folder".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flags_broken_song_folders() {
+        let root = std::env::temp_dir().join(format!("yargle-broken-test-{}", std::process::id()));
+        let case = |name: &str, files: &[&str]| -> Vec<String> {
+            let dir = root.join(name);
+            fs::create_dir_all(&dir).unwrap();
+            for f in files {
+                fs::write(dir.join(f), b"x").unwrap();
+            }
+            content_issues(&dir).into_iter().map(|i| i.message).collect()
+        };
+        assert!(case("ok", &["song.ini", "notes.chart", "song.opus"]).is_empty());
+        assert!(case("ok-mogg", &["song.ini", "notes.mid", "song.mogg"]).is_empty());
+        assert_eq!(case("no-audio", &["song.ini", "notes.mid", "album.png"]), ["No audio files"]);
+        assert_eq!(case("no-chart", &["song.ini", "song.ogg"]), ["No chart file (notes.chart or notes.mid)"]);
+        assert_eq!(case("ini-only", &["song.ini"]), ["Only song.ini: no chart and no audio files"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn reads_windows_1252_song_ini() {
+        let path = std::env::temp_dir().join(format!("yargle-ini-test-{}.ini", std::process::id()));
+        fs::write(&path, b"[song]\r\nartist = Queensr\xffche\r\n").unwrap();
+        let meta = song_ini::parse_song_ini(&song_ini::read_song_ini(&path).unwrap());
+        assert_eq!(meta.artist, "Queensr\u{ff}che");
+        let _ = fs::remove_file(&path);
+    }
 }

@@ -1,4 +1,5 @@
 import React from "react";
+import { instrumentIconUrl, type YargInstrument } from "./YargIcon";
 
 // Difficulty-tier names, index 0 (no part) .. 7 (impossible).
 export const TIER_LABELS = [
@@ -7,9 +8,19 @@ export const TIER_LABELS = [
 ];
 
 // A segmented ring showing a difficulty tier (0-7): `tier` of 7 segments are
-// filled, with the tier number in the middle. `size` scales the whole thing
-// proportionally (default 44 = the editor's size; the browse list uses smaller).
-export function DifficultyRing({ tier, size = 44 }: { tier: number; size?: number }) {
+// filled. With `instrument`, YARG's instrument sprite sits in the middle (as in
+// YARG's song sidebar), dimmed when the part isn't charted; otherwise the tier
+// number does. `size` scales the whole thing proportionally (default 44 = the
+// editor's size; the browse list uses smaller).
+export function DifficultyRing({
+  tier,
+  size = 44,
+  instrument,
+}: {
+  tier: number;
+  size?: number;
+  instrument?: YargInstrument;
+}) {
   const k = size / 44; // scale factor relative to the original 44px design
   const cx = size / 2;
   const cy = size / 2;
@@ -39,7 +50,7 @@ export function DifficultyRing({ tier, size = 44 }: { tier: number; size?: numbe
           key={`bg-${i}`}
           d={arcPath(i)}
           fill="none"
-          stroke="#3a3a5c"
+          style={{ stroke: "var(--ring-track)" }}
           strokeWidth={strokeW}
           strokeLinecap="round"
         />
@@ -53,23 +64,34 @@ export function DifficultyRing({ tier, size = 44 }: { tier: number; size?: numbe
             key={`fg-${i}`}
             d={arcPath(i)}
             fill="none"
-            stroke={isDevil ? "#e94560" : "#e0e0e0"}
+            style={{ stroke: isDevil ? "var(--tier-devil)" : "var(--text-primary)" }}
             strokeWidth={strokeW}
             strokeLinecap="round"
           />
         );
       })}
-      {/* Center tier number */}
-      {tier > 0 && (
+      {/* Center: instrument sprite, or the tier number */}
+      {instrument ? (
+        <image
+          href={instrumentIconUrl(instrument)}
+          x={cx - 12 * k}
+          y={cy - 12 * k}
+          width={24 * k}
+          height={24 * k}
+          opacity={tier > 0 ? 1 : 0.28}
+        />
+      ) : tier > 0 && (
         <text
           x={cx}
           y={cy + k}
           textAnchor="middle"
           dominantBaseline="central"
-          fill={tier === 7 ? "#e94560" : "#e0e0e0"}
-          fontSize={13 * k}
+          style={{
+            fill: tier === 7 ? "var(--tier-devil)" : "var(--text-primary)",
+            fontFamily: "var(--font-ui)",
+          }}
+          fontSize={14 * k}
           fontWeight="700"
-          fontFamily="sans-serif"
         >
           {tier}
         </text>

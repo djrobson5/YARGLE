@@ -1,6 +1,6 @@
 [package]
 name = "yargle"
-version = "0.61.0"
+version = "0.80.0"
 edition = "2021"
 
 [lib]
@@ -21,7 +21,7 @@ encoding_rs = "0.8"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 base64 = "0.22"
 texture2ddecoder = "0.0.5"
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "cookies"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "cookies", "gzip", "brotli"] }
 chrono = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 rayon = "1"
@@ -30,6 +30,14 @@ zip = "2"
 themethod3 = { git = "https://github.com/DarkRTA/themethod3", default-features = false }
 midly = "0.5"
 self-replace = "1"
+trash = "5.2.9"
+unrar-ng = "0.7.7"
+sevenz-rust2 = { version = "0.23.0", default-features = false, features = ["util", "bzip2", "ppmd", "deflate"] }
+md-5 = "0.11.0"
+
+[target.'cfg(windows)'.dependencies]
+# Taskbar icon: load the embedded .ico at the window's exact DPI (lib.rs).
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

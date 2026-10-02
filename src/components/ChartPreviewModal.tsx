@@ -7,6 +7,8 @@ import type {
   ChartNote,
   TempoEvent,
 } from "../types";
+import { X } from "lucide-react";
+import { DifficultyIcon, InstrumentIcon, instrumentFromName, type YargDifficulty } from "./YargIcon";
 
 interface ChartPreviewModalProps {
   songPath: string;
@@ -15,20 +17,28 @@ interface ChartPreviewModalProps {
 
 const DIFFICULTIES = ["expert", "hard", "medium", "easy"] as const;
 
+const DIFFICULTY_ICONS: Record<(typeof DIFFICULTIES)[number], YargDifficulty> = {
+  expert: "Expert",
+  hard: "Hard",
+  medium: "Medium",
+  easy: "Easy",
+};
+
+// YARG's gem colors (MenuColors.asset Navigation*), same as the logo.
 const LANE_COLORS_GUITAR = [
-  "#00cc00", // green
-  "#cc0000", // red
-  "#cccc00", // yellow
-  "#0066cc", // blue
-  "#cc6600", // orange
+  "#17e289", // green
+  "#f32b37", // red
+  "#ffbb0d", // yellow
+  "#3784f9", // blue
+  "#ff8413", // orange
 ];
 
 const LANE_COLORS_DRUMS = [
-  "#cc6600", // kick (orange)
-  "#cc0000", // red
-  "#cccc00", // yellow
-  "#0066cc", // blue
-  "#00cc00", // green
+  "#ff8413", // kick (orange)
+  "#f32b37", // red
+  "#ffbb0d", // yellow
+  "#3784f9", // blue
+  "#17e289", // green
 ];
 
 const LANE_WIDTH = 28;
@@ -137,7 +147,7 @@ export function ChartPreviewModal({ songPath, onClose }: ChartPreviewModalProps)
       <div className="chart-preview-modal" onClick={(e) => e.stopPropagation()}>
         <div className="art-search-header">
           <h3>Chart Preview</h3>
-          <button className="art-search-close" onClick={onClose}>&times;</button>
+          <button className="art-search-close" onClick={onClose} aria-label="Close" title="Close"><X size={18} /></button>
         </div>
 
         {loading && <div className="chart-preview-loading">Loading chart data...</div>}
@@ -153,6 +163,9 @@ export function ChartPreviewModal({ songPath, onClose }: ChartPreviewModalProps)
                   className={`chart-tab ${inst.name === selectedInstrument ? "active" : ""}`}
                   onClick={() => setSelectedInstrument(inst.name)}
                 >
+                  {instrumentFromName(inst.name) && (
+                    <InstrumentIcon instrument={instrumentFromName(inst.name)!} size={18} />
+                  )}
                   {inst.name}
                   <span className="chart-tab-count">
                     {(inst.note_counts as any)[selectedDifficulty] ?? 0}
@@ -169,6 +182,7 @@ export function ChartPreviewModal({ songPath, onClose }: ChartPreviewModalProps)
                   className={`chart-diff-btn ${d === selectedDifficulty ? "active" : ""}`}
                   onClick={() => setSelectedDifficulty(d)}
                 >
+                  <DifficultyIcon difficulty={DIFFICULTY_ICONS[d]} size={18} />
                   {d.charAt(0).toUpperCase() + d.slice(1)}
                 </button>
               ))}
@@ -281,7 +295,7 @@ function drawHighway(
   ctx.clearRect(0, 0, width, height);
 
   // Background
-  ctx.fillStyle = "#0d0d1a";
+  ctx.fillStyle = "#05060b";
   ctx.fillRect(0, 0, width, height);
 
   // Reversed Y: low ticks at bottom, high ticks at top
@@ -374,7 +388,7 @@ function drawHighway(
       const radius = LANE_WIDTH / 2 - 4;
       ctx.beginPath();
       ctx.arc(cx, y, radius, 0, Math.PI * 2);
-      ctx.fillStyle = "#0d0d1a";
+      ctx.fillStyle = "#05060b";
       ctx.fill();
       ctx.lineWidth = 2.5;
       ctx.strokeStyle = color;

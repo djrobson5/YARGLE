@@ -3,7 +3,37 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { DifficultyRing, TIER_LABELS } from "./DifficultyRing";
-import type { RvBrowseResult, RvDownloadRecord, RvSongFile, SongSummary } from "../types";
+import { InstrumentIcon } from "./YargIcon";
+import type {
+  CatalogFacets,
+  CatalogQuery,
+  CatalogStatus,
+  CatalogSuggestion,
+  FixTarget,
+  RvBrowseResult,
+  RvDownloadRecord,
+  RvDownloadResult,
+  RvSongFile,
+  SongSummary,
+} from "../types";
+import {
+  ArrowDown,
+  ArrowLeft,
+  ArrowUp,
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Dices,
+  Download,
+  ExternalLink,
+  Minus,
+  Music,
+  RefreshCw,
+  Search,
+  Shuffle,
+  SlidersHorizontal,
+  X,
+} from "lucide-react";
 
 interface RhythmVerseModalProps {
   /** Currently-loaded library songs, used to flag "already in library". */
@@ -18,7 +48,16 @@ interface RhythmVerseModalProps {
   onMinimize?: () => void;
   /** Bring a minimized modal back to the foreground. */
   onRestore?: () => void;
+  /** A broken song to replace: the next download goes next to it and takes its place. */
+  fixTarget?: FixTarget | null;
+  /** The fix finished (or was cancelled); the caller clears `fixTarget`. */
+  onFixEnd?: () => void;
   onClose: () => void;
+}
+
+/** Parent folder of a path (either slash style). */
+function parentDir(path: string): string {
+  return path.replace(/[\\/]+$/, "").replace(/[\\/][^\\/]*$/, "");
 }
 
 interface DownloadProgress {
@@ -48,13 +87,95 @@ const SORT_OPTIONS = [
   { value: "artist", label: "Artist" },
 ] as const;
 
+// The offline catalog can sort on more than the live API.
+const CATALOG_SORT_OPTIONS = [
+  { value: "update_date", label: "Last updated" },
+  { value: "uploaded", label: "Date added" },
+  { value: "downloads", label: "Most downloaded" },
+  { value: "title", label: "Title" },
+  { value: "artist", label: "Artist" },
+  { value: "length", label: "Length" },
+  { value: "year", label: "Year" },
+] as const;
+
+const DECADES = ["2020s", "2010s", "2000s", "1990s", "1980s", "1970s", "1960s", "Older"];
+
+function decadeRange(d: string): [number | null, number | null] {
+  if (!d) return [null, null];
+  if (d === "Older") return [null, 1959];
+  const y = parseInt(d, 10);
+  return [y, y + 9];
+}
+
+const LENGTHS = [
+  { value: "", label: "Any length", min: null, max: null },
+  { value: "short", label: "Under 3 min", min: null, max: 179 },
+  { value: "mid", label: "3–5 min", min: 180, max: 300 },
+  { value: "long", label: "5–8 min", min: 301, max: 480 },
+  { value: "epic", label: "Over 8 min", min: 481, max: null },
+] as const;
+
+const ADDED_WITHIN = [
+  { value: 0, label: "Added any time" },
+  { value: 7, label: "Past week" },
+  { value: 30, label: "Past month" },
+  { value: 90, label: "Past 3 months" },
+  { value: 365, label: "Past year" },
+] as const;
+
+// How many charts "Surprise me" picks.
+const SURPRISE_COUNT = 5;
+
+// Catalog-only filters (the live API can't do these).
+interface Filters {
+  instruments: string[]; // must be charted: guitar, bass, drums, vocals, keys
+  genre: string;
+  gameformat: string;
+  decade: string;
+  length: string;
+  addedDays: number;
+  charter: string;
+  hideOwned: boolean;
+}
+
+const NO_FILTERS: Filters = {
+  instruments: [],
+  genre: "",
+  gameformat: "",
+  decade: "",
+  length: "",
+  addedDays: 0,
+  charter: "",
+  hideOwned: false,
+};
+
+function activeFilterCount(f: Filters): number {
+  return (
+    f.instruments.length +
+    [f.genre, f.gameformat, f.decade, f.length, f.charter.trim()].filter(Boolean).length +
+    (f.addedDays > 0 ? 1 : 0) +
+    (f.hideOwned ? 1 : 0)
+  );
+}
+
+// "just now" / "12 min ago" / "3 h ago" / a date, for the last catalog sync.
+function formatAgo(iso: string): string {
+  const t = Date.parse(iso);
+  if (isNaN(t)) return "";
+  const min = Math.round((Date.now() - t) / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min} min ago`;
+  if (min < 24 * 60) return `${Math.round(min / 60)} h ago`;
+  return new Date(t).toLocaleDateString();
+}
+
 // Core band instruments, in the usual display order.
 const INSTRUMENTS = [
-  { key: "diff_guitar", label: "G", name: "Guitar" },
-  { key: "diff_bass", label: "B", name: "Bass" },
-  { key: "diff_drums", label: "D", name: "Drums" },
-  { key: "diff_vocals", label: "V", name: "Vocals" },
-  { key: "diff_keys", label: "K", name: "Keys" },
+  { key: "diff_guitar", label: "G", name: "Guitar", icon: "guitar" },
+  { key: "diff_bass", label: "B", name: "Bass", icon: "bass" },
+  { key: "diff_drums", label: "D", name: "Drums", icon: "drums" },
+  { key: "diff_vocals", label: "V", name: "Vocals", icon: "vocals" },
+  { key: "diff_keys", label: "K", name: "Keys", icon: "keys" },
 ] as const;
 
 // A tier >= 1 means the instrument is charted; 0 / -1 / null means absent.
@@ -204,8 +325,14 @@ export function RhythmVerseModal({
   minimized = false,
   onMinimize,
   onRestore,
+  fixTarget = null,
+  onFixEnd,
   onClose,
 }: RhythmVerseModalProps) {
+  // "Fix it": message shown after a replacement, and the broken song's linked
+  // RhythmVerse file (highlighted in results when present).
+  const [fixNotice, setFixNotice] = useState<string | null>(null);
+  const [fixLinkedId, setFixLinkedId] = useState<string | null>(null);
   const [text, setText] = useState(""); // input box
   const [query, setQuery] = useState(""); // submitted search
   const [sortBy, setSortBy] = useState<string>("update_date");
@@ -235,7 +362,7 @@ export function RhythmVerseModal({
   // Pending (song, dest) pairs waiting for a free slot, and the live in-flight
   // count. Refs, not state, so the scheduler reads current values without
   // stale-closure races and without re-rendering on every tick.
-  const queueRef = useRef<Array<{ song: RvSongFile; dest: string }>>([]);
+  const queueRef = useRef<Array<{ song: RvSongFile; dest: string; fix?: FixTarget }>>([]);
   const activeCountRef = useRef(0);
   // file_ids that are queued or downloading — guards against enqueuing the same
   // song twice (e.g. a double-click).
@@ -244,6 +371,108 @@ export function RhythmVerseModal({
   const [libRefreshing, setLibRefreshing] = useState(false);
   // file_id whose link was just copied, for a transient "Copied!" indicator
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // Offline catalog: once a full sync has finished, browsing queries the local
+  // copy (instant, offline, extra filters) instead of the live API.
+  const [catalog, setCatalog] = useState<CatalogStatus | null>(null);
+  const useCatalog = !!catalog?.ready;
+  const [filters, setFilters] = useState<Filters>(NO_FILTERS);
+  const [showFilters, setShowFilters] = useState(false);
+  const [charterText, setCharterText] = useState("");
+  const [facets, setFacets] = useState<CatalogFacets | null>(null);
+  // >0 while showing "Surprise me" picks; bumping it reshuffles.
+  const [surprise, setSurprise] = useState(0);
+  // Bumped after the owned-song keys reach the backend, so "hide songs I
+  // already have" re-queries against the fresh set.
+  const [ownedVersion, setOwnedVersion] = useState(0);
+  const [suggestions, setSuggestions] = useState<CatalogSuggestion[]>([]);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [suggestIdx, setSuggestIdx] = useState(-1);
+
+  useEffect(() => {
+    invoke<CatalogStatus>("catalog_status")
+      .then(setCatalog)
+      .catch(() => {});
+    const un = listen<CatalogStatus>("catalog-sync", (e) => setCatalog(e.payload));
+    return () => {
+      un.then((fn) => fn());
+    };
+  }, []);
+
+  // Filter option lists; refreshed whenever a sync finishes.
+  const catalogSyncing = !!catalog?.syncing;
+  useEffect(() => {
+    if (!useCatalog || catalogSyncing) return;
+    invoke<CatalogFacets>("catalog_facets")
+      .then(setFacets)
+      .catch(() => {});
+  }, [useCatalog, catalogSyncing]);
+
+  const updateFilters = (patch: Partial<Filters>) => {
+    setFilters((f) => ({ ...f, ...patch }));
+    setSurprise(0);
+    setPage(1);
+  };
+
+  // Charter box: commit to the filters after a short typing pause.
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      if (charterText.trim() !== filters.charter) updateFilters({ charter: charterText.trim() });
+    }, 300);
+    return () => window.clearTimeout(t);
+  }, [charterText]);
+
+  // Catalog search is local, so search as you type (after a short pause).
+  useEffect(() => {
+    if (!useCatalog) return;
+    const t = window.setTimeout(() => {
+      const q = text.trim();
+      if (q !== query) {
+        setQuery(q);
+        setPage(1);
+        setSurprise(0);
+      }
+    }, 250);
+    return () => window.clearTimeout(t);
+  }, [text, useCatalog]);
+
+  // Type-ahead: artists and titles starting with what's typed.
+  useEffect(() => {
+    if (!useCatalog || !suggestOpen) {
+      setSuggestions([]);
+      return;
+    }
+    const q = text.trim();
+    if (q.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+    let cancelled = false;
+    const t = window.setTimeout(() => {
+      invoke<CatalogSuggestion[]>("catalog_suggest", { text: q })
+        .then((s) => {
+          if (!cancelled) {
+            // Hide a lone suggestion that's exactly what's typed.
+            const rest = s.filter((x) => x.value.toLowerCase() !== q.toLowerCase());
+            setSuggestions(rest);
+            setSuggestIdx(-1);
+          }
+        })
+        .catch(() => {});
+    }, 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [text, useCatalog, suggestOpen]);
+
+  const pickSuggestion = (s: CatalogSuggestion) => {
+    setText(s.value);
+    setQuery(s.value);
+    setPage(1);
+    setSurprise(0);
+    setSuggestOpen(false);
+  };
 
   const refreshDownloads = useCallback(() => {
     invoke<RvDownloadRecord[]>("rv_download_records")
@@ -380,10 +609,10 @@ export function RhythmVerseModal({
   // Run one download to completion, then free its slot and pull the next queued
   // item. The backend `rv_download` is fully independent per call (own HTTP
   // client/cookie jar, own buffer), so several can safely run at once.
-  const runDownload = async (song: RvSongFile, dest: string) => {
+  const runDownload = async (song: RvSongFile, dest: string, fix?: FixTarget) => {
     setDlProgress((cur) => new Map(cur).set(song.file_id, { phase: "starting", pct: 0 }));
     try {
-      await invoke("rv_download", {
+      const res = await invoke<RvDownloadResult>("rv_download", {
         fileId: song.file_id,
         destFolder: dest,
         songId: song.song_id,
@@ -391,7 +620,17 @@ export function RhythmVerseModal({
         title: song.title,
         fileName: song.file_name,
         uploaded: song.uploaded,
+        // Off-site files (Drive, Mediafire, …) are resolved by the backend.
+        externalUrl: song.external_url || null,
       });
+      if (fix) {
+        // Recycle the broken copy and give the new one its name.
+        await invoke<string>("rv_replace_broken", {
+          brokenPath: fix.path,
+          newPath: res.extracted_to,
+        });
+        setFixNotice(`Replaced the broken copy of ${fix.name}.`);
+      }
       refreshDownloads();
       onLibraryChanged?.();
     } catch (e) {
@@ -418,7 +657,7 @@ export function RhythmVerseModal({
     ) {
       const next = queueRef.current.shift()!;
       activeCountRef.current += 1;
-      void runDownload(next.song, next.dest);
+      void runDownload(next.song, next.dest, next.fix);
     }
   };
 
@@ -427,7 +666,11 @@ export function RhythmVerseModal({
   // folder pickers.
   const handleDownload = async (song: RvSongFile) => {
     if (inFlightRef.current.has(song.file_id)) return; // already queued/running
-    let dest = libraryFolder;
+    // In fix mode the first download replaces the broken song: it lands in the
+    // same folder so it can take the broken copy's name afterwards.
+    const fix = fixTarget ?? undefined;
+    if (fix) onFixEnd?.();
+    let dest = fix ? parentDir(fix.path) : libraryFolder;
     if (!dest) {
       const picked = await open({ directory: true, multiple: false });
       if (!picked) return;
@@ -436,7 +679,7 @@ export function RhythmVerseModal({
     setError(null);
     inFlightRef.current.add(song.file_id);
     setDlProgress((cur) => new Map(cur).set(song.file_id, { phase: "queued", pct: 0 }));
-    queueRef.current.push({ song, dest });
+    queueRef.current.push({ song, dest, fix });
     pumpQueue();
   };
 
@@ -529,18 +772,58 @@ export function RhythmVerseModal({
     ).then(() => refreshDownloads());
   }, [result, downloads, refreshDownloads]);
 
+  // Hand the library's artist+title keys to the backend for "hide songs I
+  // already have" (the catalog can't see the in-memory library otherwise).
+  useEffect(() => {
+    if (!useCatalog) return;
+    const t = window.setTimeout(() => {
+      invoke("catalog_set_owned", { keys: Array.from(libIndex.artistTitle) })
+        .then(() => setOwnedVersion((v) => v + 1))
+        .catch(() => {});
+    }, 500);
+    return () => window.clearTimeout(t);
+  }, [libIndex, useCatalog]);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    invoke<RvBrowseResult>("rv_browse", {
-      game: "yarg",
-      text: query,
-      page,
-      records: RECORDS_PER_PAGE,
-      sortBy,
-      sortOrder,
-    })
+    let request: Promise<RvBrowseResult>;
+    if (useCatalog) {
+      const [yearMin, yearMax] = decadeRange(filters.decade);
+      const len = LENGTHS.find((l) => l.value === filters.length) ?? LENGTHS[0];
+      const q: CatalogQuery = {
+        text: query,
+        charter: filters.charter,
+        genre: filters.genre,
+        gameformat: filters.gameformat,
+        instruments: filters.instruments,
+        yearMin,
+        yearMax,
+        lengthMin: len.min,
+        lengthMax: len.max,
+        addedWithinDays: filters.addedDays || null,
+        // Fix mode is looking for a song you have, so never hide it.
+        hideOwned: filters.hideOwned && !fixTarget,
+        sortBy,
+        sortOrder,
+        page: surprise > 0 ? 1 : page,
+        records: surprise > 0 ? SURPRISE_COUNT : RECORDS_PER_PAGE,
+        random: surprise > 0,
+      };
+      request = invoke<RvBrowseResult>("catalog_query", { query: q });
+    } else {
+      request = invoke<RvBrowseResult>("rv_browse", {
+        game: "yarg",
+        text: query,
+        page,
+        records: RECORDS_PER_PAGE,
+        // The live API only knows the shared sort keys.
+        sortBy: SORT_OPTIONS.some((o) => o.value === sortBy) ? sortBy : "update_date",
+        sortOrder,
+      });
+    }
+    request
       .then((res) => {
         if (!cancelled) setResult(res);
       })
@@ -556,15 +839,26 @@ export function RhythmVerseModal({
     return () => {
       cancelled = true;
     };
-  }, [query, sortBy, sortOrder, page]);
+    // ownedVersion only matters while hiding owned songs.
+  }, [
+    query,
+    sortBy,
+    sortOrder,
+    page,
+    useCatalog,
+    filters,
+    surprise,
+    filters.hideOwned ? ownedVersion : 0,
+    !!fixTarget,
+  ]);
 
   // Reset the results list to the top whenever the visible set changes (page
-  // turn, new search, or re-sort). Without this, turning the page while scrolled
-  // to the bottom leaves you stranded at the bottom of the new page.
+  // turn, new search, re-sort, or new filters). Without this, turning the page
+  // while scrolled to the bottom leaves you stranded at the bottom of the new page.
   const resultsRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     resultsRef.current?.scrollTo({ top: 0 });
-  }, [query, sortBy, sortOrder, page]);
+  }, [query, sortBy, sortOrder, page, filters, surprise]);
 
   // Keep the jump box showing the actual page after Prev/Next or a jump.
   useEffect(() => {
@@ -573,8 +867,28 @@ export function RhythmVerseModal({
 
   const submitSearch = () => {
     setPage(1);
+    setSurprise(0);
+    setSuggestOpen(false);
     setQuery(text.trim());
   };
+
+  // Entering fix mode: search for the broken song and look up its link.
+  useEffect(() => {
+    if (!fixTarget) return;
+    setFixNotice(null);
+    const q = [fixTarget.artist, fixTarget.title].filter(Boolean).join(" ").trim() || fixTarget.name;
+    setText(q);
+    setQuery(q);
+    setPage(1);
+    // Filters could hide the very song being fixed.
+    setFilters(NO_FILTERS);
+    setCharterText("");
+    setSurprise(0);
+    setFixLinkedId(null);
+    invoke<string | null>("rv_linked_file_id", { path: fixTarget.path })
+      .then((id) => setFixLinkedId(id))
+      .catch(() => {});
+  }, [fixTarget?.path]);
 
   const totalPages = result
     ? Math.max(1, Math.ceil(result.total_filtered / RECORDS_PER_PAGE))
@@ -625,7 +939,7 @@ export function RhythmVerseModal({
                 title="Minimize — keep your place and return to the app (e.g. to paste a link)"
                 aria-label="Minimize"
               >
-                &minus;
+                <Minus size={18} />
               </button>
             )}
             <button
@@ -634,25 +948,92 @@ export function RhythmVerseModal({
               title="Close"
               aria-label="Close"
             >
-              &times;
+              <X size={18} />
             </button>
           </div>
         </div>
 
+        {fixTarget ? (
+          <div className="rv-fix-banner">
+            <span>
+              <b>Fixing {fixTarget.name}.</b> The next song you download replaces this broken copy
+              {fixLinkedId ? " (its linked version is highlighted)" : ""}.
+            </span>
+            <button className="rv-fix-cancel" onClick={() => onFixEnd?.()}>
+              Cancel
+            </button>
+          </div>
+        ) : fixNotice ? (
+          <div className="rv-fix-banner rv-fix-done">
+            <span>{fixNotice}</span>
+            <button className="rv-fix-cancel" onClick={() => setFixNotice(null)}>
+              Dismiss
+            </button>
+          </div>
+        ) : null}
+
         <div className="rv-controls">
-          <input
-            type="text"
-            className="rv-search-input"
-            placeholder="Search songs, artists…"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") submitSearch();
-            }}
-            autoFocus
-          />
+          <div className="rv-search-wrap">
+            <input
+              type="text"
+              className="rv-search-input"
+              placeholder={
+                useCatalog
+                  ? "Search titles, artists, albums, charters…"
+                  : "Search songs, artists…"
+              }
+              value={text}
+              onChange={(e) => {
+                setText(e.target.value);
+                setSuggestOpen(true);
+              }}
+              onBlur={() => setSuggestOpen(false)}
+              onKeyDown={(e) => {
+                if (suggestions.length > 0 && suggestOpen) {
+                  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                    e.preventDefault();
+                    const n = suggestions.length;
+                    setSuggestIdx((i) =>
+                      e.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n
+                    );
+                    return;
+                  }
+                  if (e.key === "Escape") {
+                    setSuggestOpen(false);
+                    return;
+                  }
+                  if (e.key === "Enter" && suggestIdx >= 0) {
+                    pickSuggestion(suggestions[suggestIdx]);
+                    return;
+                  }
+                }
+                if (e.key === "Enter") submitSearch();
+              }}
+              autoFocus
+            />
+            {suggestOpen && suggestions.length > 0 && (
+              <ul className="rv-suggest">
+                {suggestions.map((sg, i) => (
+                  <li
+                    key={`${sg.kind}:${sg.value}`}
+                    className={i === suggestIdx ? "rv-suggest-active" : ""}
+                    // mousedown, not click: fires before the input's blur closes the list
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      pickSuggestion(sg);
+                    }}
+                  >
+                    <span className="rv-suggest-value">{sg.value}</span>
+                    <span className="rv-suggest-kind">
+                      {sg.kind} · {sg.count.toLocaleString()}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
           <button className="rv-search-btn" onClick={submitSearch}>
-            Search
+            <Search size={15} /> Search
           </button>
           <select
             className="rv-sort-select"
@@ -660,9 +1041,10 @@ export function RhythmVerseModal({
             onChange={(e) => {
               setSortBy(e.target.value);
               setPage(1);
+              setSurprise(0);
             }}
           >
-            {SORT_OPTIONS.map((o) => (
+            {(useCatalog ? CATALOG_SORT_OPTIONS : SORT_OPTIONS).map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
               </option>
@@ -674,32 +1056,212 @@ export function RhythmVerseModal({
             onClick={() => {
               setSortOrder((o) => (o === "DESC" ? "ASC" : "DESC"));
               setPage(1);
+              setSurprise(0);
             }}
           >
-            {sortOrder === "DESC" ? "↓" : "↑"}
+            {sortOrder === "DESC" ? <ArrowDown size={15} /> : <ArrowUp size={15} />}
           </button>
+          {useCatalog && (
+            <button
+              className={`rv-filter-btn${showFilters ? " rv-filter-btn-open" : ""}`}
+              onClick={() => setShowFilters((v) => !v)}
+              title="Filter by instrument, genre, decade, length, charter and more"
+            >
+              <SlidersHorizontal size={14} /> Filters
+              {activeFilterCount(filters) > 0 && (
+                <span className="rv-filter-count">{activeFilterCount(filters)}</span>
+              )}
+            </button>
+          )}
           {onLibraryChanged && (
             <button
               className="rv-order-btn"
               disabled={libRefreshing}
-              title="Rescan your library — use after manually adding files from an external (↗) download so they show as In library"
+              title="Rescan your library — use after manually adding files from an external (Open) download so they show as In library"
               onClick={handleRefreshLibrary}
             >
-              {libRefreshing ? "…" : "↻"}
+              <RefreshCw size={14} className={libRefreshing ? "spin" : undefined} />
             </button>
           )}
         </div>
 
+        {useCatalog && showFilters && (
+          <div className="rv-filters">
+            <div className="rv-filter-insts" title="Only show charts with these instruments">
+              {INSTRUMENTS.map((inst) => {
+                const key = inst.name.toLowerCase();
+                const on = filters.instruments.includes(key);
+                return (
+                  <button
+                    key={key}
+                    className={`rv-inst-chip${on ? " rv-inst-chip-on" : ""}`}
+                    title={on ? `${inst.name} required` : `Require ${inst.name.toLowerCase()}`}
+                    onClick={() => {
+                      // Functional update: quick successive toggles must not
+                      // overwrite each other from a stale `filters`.
+                      setFilters((f) => ({
+                        ...f,
+                        instruments: f.instruments.includes(key)
+                          ? f.instruments.filter((i) => i !== key)
+                          : [...f.instruments, key],
+                      }));
+                      setSurprise(0);
+                      setPage(1);
+                    }}
+                    aria-pressed={on}
+                  >
+                    <InstrumentIcon instrument={inst.icon} size={22} />
+                  </button>
+                );
+              })}
+            </div>
+            <select
+              className="rv-sort-select"
+              value={filters.genre}
+              onChange={(e) => updateFilters({ genre: e.target.value })}
+            >
+              <option value="">Any genre</option>
+              {facets?.genres.map((g) => (
+                <option key={g.value} value={g.value}>
+                  {g.value} ({g.count.toLocaleString()})
+                </option>
+              ))}
+            </select>
+            <select
+              className="rv-sort-select"
+              value={filters.decade}
+              onChange={(e) => updateFilters({ decade: e.target.value })}
+            >
+              <option value="">Any decade</option>
+              {DECADES.map((d) => (
+                <option key={d} value={d}>
+                  {d === "Older" ? "Before 1960" : d}
+                </option>
+              ))}
+            </select>
+            <select
+              className="rv-sort-select"
+              value={filters.length}
+              onChange={(e) => updateFilters({ length: e.target.value })}
+            >
+              {LENGTHS.map((l) => (
+                <option key={l.value} value={l.value}>
+                  {l.label}
+                </option>
+              ))}
+            </select>
+            <select
+              className="rv-sort-select"
+              value={filters.addedDays}
+              onChange={(e) => updateFilters({ addedDays: Number(e.target.value) })}
+            >
+              {ADDED_WITHIN.map((a) => (
+                <option key={a.value} value={a.value}>
+                  {a.label}
+                </option>
+              ))}
+            </select>
+            <select
+              className="rv-sort-select"
+              value={filters.gameformat}
+              onChange={(e) => updateFilters({ gameformat: e.target.value })}
+            >
+              <option value="">Any format</option>
+              {facets?.formats.map((f) => (
+                <option key={f.value} value={f.value}>
+                  {`${GAME_FORMAT_LABELS[f.value] || f.value.toUpperCase()} (${f.count.toLocaleString()})`}
+                </option>
+              ))}
+            </select>
+            <input
+              type="text"
+              className="rv-search-input rv-charter-input"
+              placeholder="Charter or uploader"
+              value={charterText}
+              onChange={(e) => setCharterText(e.target.value)}
+            />
+            <label
+              className="rv-filter-check"
+              title="Hide charts that match a song already in your library"
+            >
+              <input
+                type="checkbox"
+                checked={filters.hideOwned}
+                onChange={(e) => updateFilters({ hideOwned: e.target.checked })}
+              />
+              Hide songs I have
+            </label>
+            <button
+              className="rv-surprise-btn"
+              onClick={() => setSurprise((n) => n + 1)}
+              title={`Pick ${SURPRISE_COUNT} random charts that match your search and filters`}
+            >
+              <Dices size={14} /> Surprise me
+            </button>
+            {activeFilterCount(filters) > 0 && (
+              <button
+                className="rv-filter-clear"
+                onClick={() => {
+                  updateFilters(NO_FILTERS);
+                  setCharterText("");
+                }}
+              >
+                Clear filters
+              </button>
+            )}
+          </div>
+        )}
+
         <div className="rv-status-bar">
           {result && !error && (
             <span>
-              {result.total_filtered.toLocaleString()}{" "}
-              {query.trim().length >= 3
-                ? `result${result.total_filtered !== 1 ? "s" : ""} for "${query.trim()}"`
-                : "songs"}
+              {surprise > 0
+                ? `${result.songs.length} random pick${
+                    result.songs.length !== 1 ? "s" : ""
+                  } from ${result.total_filtered.toLocaleString()} matching`
+                : `${result.total_filtered.toLocaleString()} ${
+                    query.trim().length >= (useCatalog ? 1 : 3)
+                      ? `result${result.total_filtered !== 1 ? "s" : ""} for "${query.trim()}"`
+                      : "songs"
+                  }`}
             </span>
           )}
           {loading && <span className="rv-status-loading">Loading…</span>}
+          {catalog && (
+            <span
+              className={`rv-catalog-status${catalog.error ? " rv-catalog-error" : ""}`}
+              title={
+                catalog.error
+                  ? `Last catalog sync failed: ${catalog.error}. Retrying in a few minutes.`
+                  : useCatalog
+                  ? `${catalog.rows.toLocaleString()} charts stored offline. Syncs every 30 minutes.`
+                  : "Downloading the RhythmVerse catalog for instant offline search and filters. Live results until it's done."
+              }
+            >
+              {catalog.syncing && catalog.mode === "full"
+                ? `Building offline catalog… ${
+                    catalog.pages_total > 0
+                      ? Math.round((catalog.pages_done / catalog.pages_total) * 100)
+                      : 0
+                  }%`
+                : catalog.syncing
+                ? "Offline catalog · syncing…"
+                : catalog.error
+                ? "Catalog sync failed"
+                : useCatalog
+                ? `Offline catalog · synced ${formatAgo(catalog.last_sync)}`
+                : ""}
+              {!catalog.syncing && (catalog.ready || catalog.error) && (
+                <button
+                  className="rv-catalog-sync"
+                  onClick={() => invoke("catalog_sync_now").catch(() => {})}
+                  title="Sync the offline catalog now"
+                >
+                  <RefreshCw size={12} />
+                </button>
+              )}
+            </span>
+          )}
           {(downloadingCount > 0 || queuedCount > 0) && (
             <span className="rv-status-dl">
               {downloadingCount > 0 ? `Downloading ${downloadingCount}` : ""}
@@ -721,8 +1283,9 @@ export function RhythmVerseModal({
           {!error &&
             result &&
             result.songs.map((song) => {
-              const have = inLibrary(song);
-              const hasUpdate = needsUpdate(song);
+              const have = !fixTarget && inLibrary(song);
+              const hasUpdate = !fixTarget && needsUpdate(song);
+              const isFixMatch = !!fixTarget && song.file_id === fixLinkedId;
               const dl = dlProgress.get(song.file_id);
               const isActive = !!dl;
               const meta = [song.album, song.year ? String(song.year) : "", song.genre]
@@ -735,9 +1298,13 @@ export function RhythmVerseModal({
                 .filter(Boolean)
                 .join(" · ");
               const isExternal = !!song.external_url;
+              // Off-site but fetchable in-app (Drive, Mediafire, Dropbox, …).
+              const extAuto = isExternal && song.external_auto;
+              // Off-site and browser-only (MEGA, Ko-fi, other pages).
+              const extManual = isExternal && !song.external_auto;
               const extHost = isExternal ? externalHostName(song.external_url) : "";
               return (
-                <div key={song.file_id} className="rv-row">
+                <div key={song.file_id} className={`rv-row${isFixMatch ? " rv-row-fix-match" : ""}`}>
                   <div className="rv-thumb">
                     {song.album_art_url ? (
                       <img
@@ -749,7 +1316,7 @@ export function RhythmVerseModal({
                         }}
                       />
                     ) : (
-                      <div className="rv-thumb-placeholder">♪</div>
+                      <div className="rv-thumb-placeholder"><Music size={22} /></div>
                     )}
                   </div>
                   <div className="rv-info">
@@ -766,7 +1333,7 @@ export function RhythmVerseModal({
                         {song.title || song.file_name}
                       </a>
                       {copiedId === song.file_id && (
-                        <span className="rv-copied">{"✓"} Copied</span>
+                        <span className="rv-copied"><Check size={12} /> Copied</span>
                       )}
                     </div>
                     <div className="rv-artist">{song.artist || "Unknown artist"}</div>
@@ -789,8 +1356,7 @@ export function RhythmVerseModal({
                                 : `${inst.name}: not charted`
                             }
                           >
-                            <DifficultyRing tier={tier} size={30} />
-                            <span className="rv-inst-letter">{inst.label}</span>
+                            <DifficultyRing tier={tier} size={34} instrument={inst.icon} />
                           </div>
                         );
                       })}
@@ -801,7 +1367,7 @@ export function RhythmVerseModal({
                       {song.gameformat && <GameFormatBadge code={song.gameformat} />}
                       {isExternal && (
                         <span className="rv-ext-host" title={`Hosted on ${extHost}`}>
-                          ↗ {extHost}
+                          <ExternalLink size={11} /> {extHost}
                         </span>
                       )}
                       {formatDuration(song.song_length_sec) && (
@@ -811,7 +1377,7 @@ export function RhythmVerseModal({
                         <span>{formatBytes(song.size_bytes)}</span>
                       )}
                       <span title="Downloads">
-                        {"↓"} {formatCount(song.downloads)}
+                        <Download size={11} /> {formatCount(song.downloads)}
                       </span>
                     </div>
                     {isActive ? (
@@ -839,13 +1405,13 @@ export function RhythmVerseModal({
                         </span>
                       </div>
                     ) : hasUpdate ? (
-                      isExternal ? (
+                      extManual ? (
                         <button
                           className="rv-update-btn"
                           onClick={() => handleUpdateExternal(song)}
                           title={`Updated on RhythmVerse (${formatDate(song.uploaded)}) since you got it — re-open ${extHost} to download the new version`}
                         >
-                          Update {"↗"}
+                          <ExternalLink size={14} /> Update
                         </button>
                       ) : (
                         <button
@@ -853,27 +1419,47 @@ export function RhythmVerseModal({
                           onClick={() => handleDownload(song)}
                           title={`Updated on RhythmVerse (${formatDate(song.uploaded)}) since you downloaded it — click to re-download and replace`}
                         >
-                          Update {"⟳"}
+                          <RefreshCw size={14} /> Update
                         </button>
                       )
                     ) : have ? (
-                      // A manual "Got it" mark on an external file is the only
-                      // way an external file_id lands in the downloads DB, so
-                      // that combination is safe to expose as an undo.
-                      isExternal && downloads.has(song.file_id) ? (
+                      // Only a path-less "Got it" mark can be undone; a real
+                      // download record (with a folder path) can't.
+                      downloads.get(song.file_id)?.manual ? (
                         <button
                           className="rv-in-lib rv-in-lib-manual"
                           onClick={() => handleUnmarkDownloaded(song)}
                           title="Marked as in your library — click to undo"
                         >
-                          {"✓"} In library
+                          <Check size={14} /> In library
                         </button>
                       ) : (
                         <span className="rv-in-lib" title="Already in your library">
-                          {"✓"} In library
+                          <Check size={14} /> In library
                         </span>
                       )
-                    ) : isExternal ? (
+                    ) : extAuto ? (
+                      <div className="rv-ext-actions">
+                        <button
+                          className="rv-dl-btn"
+                          onClick={() => handleDownload(song)}
+                          title={
+                            libraryFolder
+                              ? `Download from ${extHost} into ${libraryFolder}`
+                              : `Download from ${extHost} (you'll choose a folder)`
+                          }
+                        >
+                          <Download size={14} /> Download
+                        </button>
+                        <button
+                          className="rv-open-alt-btn"
+                          onClick={() => handleOpenExternal(song)}
+                          title={`Open on ${extHost} in your browser instead`}
+                        >
+                          <ExternalLink size={14} /> Open
+                        </button>
+                      </div>
+                    ) : extManual ? (
                       <div className="rv-ext-actions">
                         <button
                           className={`rv-ext-btn${
@@ -886,14 +1472,14 @@ export function RhythmVerseModal({
                               : `Hosted on ${extHost} — opens in your browser to download manually`
                           }
                         >
-                          {openedIds.has(song.file_id) ? "Opened ↗" : "Open ↗"}
+                          <ExternalLink size={14} /> {openedIds.has(song.file_id) ? "Opened" : "Open"}
                         </button>
                         <button
                           className="rv-gotit-btn"
                           onClick={() => handleMarkDownloaded(song)}
                           title="Already grabbed this and added it to your library? Mark it as In library (exact match by file ID)"
                         >
-                          {"✓"} Got it
+                          <Check size={14} /> Got it
                         </button>
                       </div>
                     ) : (
@@ -906,7 +1492,7 @@ export function RhythmVerseModal({
                             : "Download (you'll choose a folder)"
                         }
                       >
-                        Download
+                        <Download size={14} /> Download
                       </button>
                     )}
                   </div>
@@ -915,13 +1501,27 @@ export function RhythmVerseModal({
             })}
         </div>
 
+        {surprise > 0 ? (
+          <div className="rv-pagination">
+            <button className="rv-page-btn" onClick={() => setSurprise(0)}>
+              <ArrowLeft size={14} /> Back to list
+            </button>
+            <button
+              className="rv-page-btn"
+              disabled={loading}
+              onClick={() => setSurprise((n) => n + 1)}
+            >
+              <Shuffle size={14} /> Shuffle again
+            </button>
+          </div>
+        ) : (
         <div className="rv-pagination">
           <button
             className="rv-page-btn"
             disabled={page <= 1 || loading}
             onClick={() => setPage((p) => Math.max(1, p - 1))}
           >
-            {"←"} Prev
+            <ChevronLeft size={15} /> Prev
           </button>
           <span className="rv-page-info">
             Page{" "}
@@ -949,9 +1549,10 @@ export function RhythmVerseModal({
             disabled={page >= totalPages || loading}
             onClick={() => setPage((p) => p + 1)}
           >
-            Next {"→"}
+            Next <ChevronRight size={15} />
           </button>
         </div>
+        )}
       </div>
     </div>
       {minimized && (
@@ -960,7 +1561,7 @@ export function RhythmVerseModal({
           onClick={onRestore}
           title="Resume browsing RhythmVerse where you left off"
         >
-          <span className="rv-restore-icon">♪</span>
+          <span className="rv-restore-icon"><Music size={15} /></span>
           RhythmVerse
           {dlProgress.size > 0 && (
             <span

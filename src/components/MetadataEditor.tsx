@@ -1,11 +1,13 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { BROKEN_FIELD } from "../types";
 import type { SongDetails, ValidationIssue } from "../types";
 import { ChartPreviewModal } from "./ChartPreviewModal";
 import { ImageEditor } from "./ImageEditor";
 import { IconSelector } from "./IconSelector";
 import { SongScores } from "./SongScores";
 import { DifficultyRing, TIER_LABELS } from "./DifficultyRing";
+import { ChartNoAxesColumn, FolderOpen, Link2, Music, Save, Trash2 } from "lucide-react";
 
 interface MetadataEditorProps {
   details: SongDetails;
@@ -14,9 +16,12 @@ interface MetadataEditorProps {
   onUpdateHeader: (field: "display_name" | "description", value: string) => void;
   onUpdateThumbnail: (base64: string) => void;
   onSave: () => void;
-  onDelete: (path: string) => Promise<void>;
+  // Resolves false if the drive has no Recycle Bin and nothing was deleted.
+  onDelete: (path: string, permanent?: boolean) => Promise<boolean>;
   hasChanges: boolean;
   saving: boolean;
+  // Re-download a broken song (missing chart/audio) through the chart browser.
+  onFixBroken?: () => void;
 }
 
 const GENRES = [
@@ -147,11 +152,14 @@ export function MetadataEditor({
   onDelete,
   hasChanges,
   saving,
+  onFixBroken,
 }: MetadataEditorProps) {
   const [showChart, setShowChart] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // Set once the Recycle Bin refuses the file; the next confirm deletes permanently.
+  const [needsPermanent, setNeedsPermanent] = useState(false);
   // RhythmVerse link (kept in YARGLE's own DB, keyed by this song's path — not
   // written into the chart, and separate from the metadata Save).
   const [rvLinkInput, setRvLinkInput] = useState("");
@@ -165,6 +173,15 @@ export function MetadataEditor({
     const n = parseInt(val, 10);
     return isNaN(n) ? null : n;
   };
+
+  // A pending delete confirm belongs to the song it was opened on — never let a
+  // "Delete Permanently" carry over to the next selection.
+  useEffect(() => {
+    setConfirmDelete(false);
+    setDeleting(false);
+    setDeleteError(null);
+    setNeedsPermanent(false);
+  }, [details.path]);
 
   // Load the current link whenever the selected song changes.
   useEffect(() => {
@@ -210,10 +227,20 @@ export function MetadataEditor({
       .finally(() => setRvLinkBusy(false));
   };
 
+  const heroArt = albumArtBase64 || details.thumbnail_base64;
+  const heroSub = [m.artist, m.album_name, m.year_released ? String(m.year_released) : ""]
+    .filter(Boolean)
+    .join(" · ");
+
   return (
     <div className="metadata-editor">
-      <div className="editor-header">
-        <h2>{m.name || details.display_name || "Untitled"}</h2>
+      {/* Album-art hero (YARG song sidebar): blurred art backdrop fading into
+          the panel, the crisp art, then title/artist and the art actions. */}
+      <div className="editor-hero">
+        <div
+          className="editor-hero-backdrop"
+          style={heroArt ? { backgroundImage: `url(${heroArt})` } : undefined}
+        />
         <div className="editor-header-buttons">
           <button
             className="chart-btn"
@@ -226,19 +253,20 @@ export function MetadataEditor({
                 : "Show this file in File Explorer"
             }
           >
-            {"\u{1F4C1}"} Explorer
+            <FolderOpen size={15} /> Explorer
           </button>
           <button
             className="chart-btn"
             onClick={() => setShowChart(true)}
           >
-            Chart
+            <ChartNoAxesColumn size={15} /> Chart
           </button>
           <button
             className={`save-btn ${hasChanges ? "has-changes" : ""}`}
             onClick={onSave}
             disabled={saving}
           >
+            <Save size={15} />
             {saving ? "Saving..." : hasChanges ? "Save Changes" : "Save"}
           </button>
           <button
@@ -246,12 +274,35 @@ export function MetadataEditor({
             onClick={() => setConfirmDelete(true)}
             disabled={deleting}
           >
-            Delete
+            <Trash2 size={15} /> Delete
           </button>
         </div>
+        <div className="editor-hero-main">
+          <div className="editor-hero-art">
+            {heroArt ? <img src={heroArt} alt="Album art" /> : <Music size={44} />}
+          </div>
+          <div className="editor-hero-text">
+            <h2>{m.name || details.display_name || "Untitled"}</h2>
+            {heroSub && <div className="editor-hero-sub">{heroSub}</div>}
+            <ImageEditor
+              buttonsOnly
+              thumbnailBase64={details.thumbnail_base64}
+              albumArtBase64={albumArtBase64}
+              songPath={details.path}
+              onReplace={onUpdateThumbnail}
+              artist={m.artist}
+              albumName={m.album_name}
+            />
+          </div>
+        </div>
+      </div>
         {confirmDelete && (
           <div className="delete-confirm-bar">
-            <span>Permanently delete this file? This cannot be undone.</span>
+            <span>
+              {needsPermanent
+                ? "This drive has no Recycle Bin. Delete permanently? This cannot be undone."
+                : "Move this song to the Recycle Bin?"}
+            </span>
             {deleteError && <span className="delete-error">{deleteError}</span>}
             <div className="delete-confirm-btns">
               <button
@@ -261,26 +312,37 @@ export function MetadataEditor({
                   setDeleting(true);
                   setDeleteError(null);
                   try {
-                    await onDelete(details.path);
+                    const deleted = await onDelete(details.path, needsPermanent);
+                    if (!deleted) {
+                      setNeedsPermanent(true);
+                      setDeleting(false);
+                    }
                   } catch (e) {
                     setDeleteError(String(e));
                     setDeleting(false);
                   }
                 }}
               >
-                {deleting ? "Deleting..." : "Yes, Delete"}
+                {deleting
+                  ? "Deleting..."
+                  : needsPermanent
+                    ? "Delete Permanently"
+                    : "Move to Recycle Bin"}
               </button>
               <button
                 className="delete-confirm-no"
                 disabled={deleting}
-                onClick={() => { setConfirmDelete(false); setDeleteError(null); }}
+                onClick={() => {
+                  setConfirmDelete(false);
+                  setDeleteError(null);
+                  setNeedsPermanent(false);
+                }}
               >
                 Cancel
               </button>
             </div>
           </div>
         )}
-      </div>
 
       <div className="editor-content">
         <div className="editor-main">
@@ -371,22 +433,22 @@ export function MetadataEditor({
             <h3>Difficulty Rankings</h3>
             <div className="rank-grid">
               {([
-                ["Drums", "rank_drum"],
-                ["Guitar", "rank_guitar"],
-                ["Bass", "rank_bass"],
-                ["Vocals", "rank_vocals"],
-                ["Keys", "rank_keys"],
-                ["Band", "rank_band"],
-                ["Pro Guitar", "rank_real_guitar"],
-                ["Pro Bass", "rank_real_bass"],
-                ["Pro Keys", "rank_real_keys"],
-              ] as const).map(([label, field]) => {
+                ["Drums", "rank_drum", "drums"],
+                ["Guitar", "rank_guitar", "guitar"],
+                ["Bass", "rank_bass", "bass"],
+                ["Vocals", "rank_vocals", "vocals"],
+                ["Keys", "rank_keys", "keys"],
+                ["Band", "rank_band", "band"],
+                ["Pro Guitar", "rank_real_guitar", "realGuitar"],
+                ["Pro Bass", "rank_real_bass", "realBass"],
+                ["Pro Keys", "rank_real_keys", "realKeys"],
+              ] as const).map(([label, field, instrument]) => {
                 const rawVal = (m as any)[field] as number | null | undefined;
                 const tier = difficultyTier(field, rawVal, details.is_folder);
                 return (
                   <div key={field} className="rank-field-with-ring">
                     <div className="rank-ring-container" title={TIER_LABELS[tier]}>
-                      <DifficultyRing tier={tier} />
+                      <DifficultyRing tier={tier} instrument={instrument} />
                     </div>
                     <div className="rank-input-wrap">
                       <label>{label}</label>
@@ -444,7 +506,7 @@ export function MetadataEditor({
                     className="rv-link-badge"
                     title="Linked to a RhythmVerse file — the browser shows this song as In library (exact) and can flag updates."
                   >
-                    {"✓"} Linked: {rvLinkedId}
+                    <Link2 size={13} /> Linked: {rvLinkedId}
                   </span>
                   <button
                     className="rv-link-clear"
@@ -493,6 +555,15 @@ export function MetadataEditor({
                       {issue.level === "Error" ? "\u2716" : issue.level === "Warning" ? "\u26A0" : "\u2139"}
                     </span>
                     <span className="validation-message">{issue.message}</span>
+                    {issue.field === BROKEN_FIELD && onFixBroken && (
+                      <button
+                        className="validator-fix-btn"
+                        onClick={onFixBroken}
+                        title="Find this song in the chart browser; the download replaces this broken copy"
+                      >
+                        Fix it
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -501,14 +572,6 @@ export function MetadataEditor({
         </div>
 
         <div className="editor-sidebar">
-          <ImageEditor
-            thumbnailBase64={details.thumbnail_base64}
-            albumArtBase64={albumArtBase64}
-            songPath={details.path}
-            onReplace={onUpdateThumbnail}
-            artist={m.artist}
-            albumName={m.album_name}
-          />
           <SongScores songName={m.name} artist={m.artist} />
         </div>
       </div>

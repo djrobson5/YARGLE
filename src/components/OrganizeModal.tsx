@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { ArrowRight, X } from "lucide-react";
 
 interface OrganizeModalProps {
   paths: string[];
@@ -11,11 +12,34 @@ interface OrganizeModalProps {
 interface OrganizePreview {
   path: string;
   filename: string;
-  artist: string;
-  album: string;
+  // Rendered subfolders ("/"-separated; empty = directly in the base folder).
   target_folder: string;
+  // Rendered song name: folder name, or file name for a CON package.
+  target_name: string;
   target_path: string;
-  status: string;
+  status: "move" | "skip_same" | "skip_no_metadata" | "skip_template";
+  note: string;
+}
+
+// Everything before the last "/" becomes folders; the last part names the song.
+const DEFAULT_TEMPLATE = "{artist}/{album}/{original}";
+const TEMPLATE_KEY = "yargle-organize-template";
+const PRESETS: { label: string; template: string }[] = [
+  { label: "Artist / Album / original name (classic)", template: DEFAULT_TEMPLATE },
+  { label: "Artist - Title", template: "{artist} - {title}" },
+  { label: "Artist / Artist - Title", template: "{artist}/{artist} - {title}" },
+  { label: "Artist / Album / Artist - Title", template: "{artist}/{album}/{artist} - {title}" },
+  { label: "Genre / Artist / Artist - Title", template: "{genre}/{artist}/{artist} - {title}" },
+  { label: "Charter / Artist - Title", template: "{charter}/{artist} - {title}" },
+];
+const TAGS = ["artist", "title", "album", "genre", "year", "charter", "original"];
+
+function loadTemplate(): string {
+  try {
+    return localStorage.getItem(TEMPLATE_KEY) || DEFAULT_TEMPLATE;
+  } catch {
+    return DEFAULT_TEMPLATE;
+  }
 }
 
 interface RenameResult {
@@ -50,6 +74,38 @@ export function OrganizeModal({
   const [organizing, setOrganizing] = useState(false);
   const [didOrganize, setDidOrganize] = useState(false);
   const [organizeResults, setOrganizeResults] = useState<RenameResult[]>([]);
+  const [template, setTemplate] = useState(loadTemplate);
+  const [example, setExample] = useState<string>("");
+  const [templateError, setTemplateError] = useState<string | null>(null);
+  const templateInput = useRef<HTMLInputElement>(null);
+
+  // Live example, rendered by the same backend code that does the move.
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      invoke<string>("render_organize_template", { template, path: paths[0] ?? null })
+        .then((ex) => {
+          setExample(ex);
+          setTemplateError(null);
+        })
+        .catch((e) => {
+          setExample("");
+          setTemplateError(String(e));
+        });
+    }, 150);
+    return () => window.clearTimeout(handle);
+  }, [template, paths]);
+
+  const insertTag = (tag: string) => {
+    const input = templateInput.current;
+    const token = `{${tag}}`;
+    const start = input?.selectionStart ?? template.length;
+    const end = input?.selectionEnd ?? template.length;
+    setTemplate(template.slice(0, start) + token + template.slice(end));
+    requestAnimationFrame(() => {
+      input?.focus();
+      input?.setSelectionRange(start + token.length, start + token.length);
+    });
+  };
 
   useEffect(() => {
     let unlisten: UnlistenFn | null = null;
@@ -67,9 +123,15 @@ export function OrganizeModal({
     setState("scanning");
     setError(null);
     try {
+      try {
+        localStorage.setItem(TEMPLATE_KEY, template);
+      } catch {
+        /* storage unavailable: the template just isn't remembered */
+      }
       const result = await invoke<OrganizePreview[]>("preview_organize", {
         paths,
         baseFolder: currentFolder,
+        template,
       });
       setPreviews(result);
       const moveable = new Set(
@@ -125,7 +187,7 @@ export function OrganizeModal({
     (p) => p.status === "skip_same"
   ).length;
   const skipNoMetaCount = previews.filter(
-    (p) => p.status === "skip_no_metadata"
+    (p) => p.status === "skip_no_metadata" || p.status === "skip_template"
   ).length;
 
   // Group moveable previews by target_folder
@@ -149,10 +211,10 @@ export function OrganizeModal({
         <div className="art-search-header">
           <h3>Auto-Organize Files</h3>
           <button
-            className="art-search-close"
+            className="art-search-close" aria-label="Close"
             onClick={() => onClose(didOrganize)}
           >
-            &times;
+            <X size={18} />
           </button>
         </div>
 
@@ -160,16 +222,58 @@ export function OrganizeModal({
           {state === "ready" && (
             <>
               <p className="mogg-decrypt-desc">
-                Sort {paths.length} CON file{paths.length !== 1 ? "s" : ""} into{" "}
-                <strong>Artist / Album</strong> subfolders based on DTA
-                metadata.
+                Sort {paths.length} song{paths.length !== 1 ? "s" : ""} into folders
+                named from their metadata. Everything before the last <code>/</code> becomes
+                folders; the last part names the song (the folder, or the file for a CON).
               </p>
+              <div className="organize-template">
+                <select
+                  className="organize-preset"
+                  value={PRESETS.some((p) => p.template === template) ? template : ""}
+                  onChange={(e) => e.target.value && setTemplate(e.target.value)}
+                >
+                  <option value="">Custom template</option>
+                  {PRESETS.map((p) => (
+                    <option key={p.template} value={p.template}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  ref={templateInput}
+                  className="organize-template-input"
+                  type="text"
+                  value={template}
+                  spellCheck={false}
+                  onChange={(e) => setTemplate(e.target.value)}
+                />
+                <div className="organize-tags">
+                  {TAGS.map((t) => (
+                    <button key={t} className="organize-tag" onClick={() => insertTag(t)}>
+                      {`{${t}}`}
+                    </button>
+                  ))}
+                </div>
+                {templateError ? (
+                  <div className="organize-template-error">{templateError}</div>
+                ) : (
+                  <div className="organize-template-example">
+                    e.g. <code>{example}</code>
+                  </div>
+                )}
+              </div>
               <div className="organize-base-path">
                 Base folder: <code>{currentFolder}</code>
               </div>
-              <button className="mogg-decrypt-start" onClick={handleScan}>
-                Scan Metadata
-              </button>
+              <div className="dialog-footer">
+                <button
+                  className="mogg-decrypt-start"
+                  onClick={handleScan}
+                  disabled={!!templateError}
+                >
+                  Preview Moves
+                </button>
+              </div>
             </>
           )}
 
@@ -212,12 +316,14 @@ export function OrganizeModal({
                       {skipNoMetaCount} missing metadata
                     </p>
                   )}
-                  <button
-                    className="mogg-decrypt-start"
-                    onClick={() => onClose(false)}
-                  >
-                    Done
-                  </button>
+                  <div className="dialog-footer">
+                    <button
+                      className="mogg-decrypt-start"
+                      onClick={() => setState("ready")}
+                    >
+                      Change Template
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <>
@@ -249,7 +355,7 @@ export function OrganizeModal({
                               onChange={toggleGroup}
                             />
                             <span className="organize-folder-path">
-                              {folder}
+                              {folder || "(base folder)"}
                             </span>
                             <span className="organize-folder-count">
                               {items.length} file
@@ -271,6 +377,10 @@ export function OrganizeModal({
                                 <div className="rename-current">
                                   {p.filename}
                                 </div>
+                                {p.target_name !== p.filename && (
+                                  <div className="rename-new"><ArrowRight size={12} /> {p.target_name}</div>
+                                )}
+                                {p.note && <div className="rename-skip-reason">{p.note}</div>}
                               </div>
                             </label>
                           ))}
@@ -299,6 +409,8 @@ export function OrganizeModal({
                               <div className="rename-skip-reason">
                                 {p.status === "skip_same"
                                   ? "Already in correct location"
+                                  : p.status === "skip_template"
+                                  ? p.note
                                   : "No metadata found"}
                               </div>
                             </div>
@@ -308,9 +420,16 @@ export function OrganizeModal({
                     )}
                   </div>
 
-                  <div className="duplicate-actions">
+                  <div className="duplicate-actions organize-actions dialog-footer">
                     <button
-                      className="duplicate-delete-btn"
+                      className="organize-back-btn"
+                      disabled={organizing}
+                      onClick={() => setState("ready")}
+                    >
+                      Change Template
+                    </button>
+                    <button
+                      className="mogg-decrypt-start"
                       disabled={selected.size === 0 || organizing}
                       onClick={handleOrganize}
                     >
@@ -358,12 +477,14 @@ export function OrganizeModal({
                 </div>
               )}
 
-              <button
-                className="mogg-decrypt-start"
-                onClick={() => onClose(didOrganize)}
-              >
-                Done
-              </button>
+              <div className="dialog-footer">
+                <button
+                  className="mogg-decrypt-start"
+                  onClick={() => onClose(didOrganize)}
+                >
+                  Done
+                </button>
+              </div>
             </div>
           )}
         </div>

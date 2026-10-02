@@ -3,7 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { IconSelector } from "./IconSelector";
 import sourcesData from "../data/sources.json";
+import { BROKEN_FIELD } from "../types";
 import type { BatchValidateResult, SongValidationResult, SongDetails, ValidationIssue } from "../types";
+import { X } from "lucide-react";
 
 const SOURCES_OPTIONS = (sourcesData.sources as { ids: string[]; names: { "en-US": string } }[])
   .filter((s) => s.ids[0] !== "$DEFAULT$")
@@ -12,6 +14,8 @@ const SOURCES_OPTIONS = (sourcesData.sources as { ids: string[]; names: { "en-US
 interface ValidatorModalProps {
   paths: string[];
   onClose: () => void;
+  // Re-download a broken song through the chart browser.
+  onFixBroken?: (song: SongValidationResult) => void;
 }
 
 interface ValidateProgress {
@@ -128,7 +132,7 @@ function coerceValue(field: string, raw: string): string | number | null {
   return raw;
 }
 
-export function ValidatorModal({ paths, onClose }: ValidatorModalProps) {
+export function ValidatorModal({ paths, onClose, onFixBroken }: ValidatorModalProps) {
   const [state, setState] = useState<"ready" | "scanning" | "results">("ready");
   const [progress, setProgress] = useState<ValidateProgress | null>(null);
   const [result, setResult] = useState<BatchValidateResult | null>(null);
@@ -289,8 +293,8 @@ export function ValidatorModal({ paths, onClose }: ValidatorModalProps) {
       >
         <div className="art-search-header">
           <h3>Validate Songs</h3>
-          <button className="art-search-close" onClick={onClose}>
-            &times;
+          <button className="art-search-close" aria-label="Close" onClick={onClose}>
+            <X size={18} />
           </button>
         </div>
 
@@ -299,12 +303,14 @@ export function ValidatorModal({ paths, onClose }: ValidatorModalProps) {
             <>
               <p className="mogg-decrypt-desc">
                 Check {paths.length} song{paths.length !== 1 ? "s" : ""} for
-                missing or invalid metadata. Catches common issues that can cause
-                YARG to skip or misidentify songs.
+                missing chart or audio files and missing or invalid metadata. Catches
+                common issues that can cause YARG to skip or misidentify songs.
               </p>
-              <button className="mogg-decrypt-start" onClick={handleScan}>
-                Run Validation
-              </button>
+              <div className="dialog-footer">
+                <button className="mogg-decrypt-start" onClick={handleScan}>
+                  Run Validation
+                </button>
+              </div>
             </>
           )}
 
@@ -435,9 +441,11 @@ export function ValidatorModal({ paths, onClose }: ValidatorModalProps) {
               {filteredResults.length === 0 ? (
                 <div className="duplicate-no-results">
                   <p>{filter === "all" ? "All songs passed validation!" : `No ${filter.toLowerCase()}-level issues found.`}</p>
-                  <button className="mogg-decrypt-start" onClick={onClose}>
-                    Done
-                  </button>
+                  <div className="dialog-footer">
+                    <button className="mogg-decrypt-start" onClick={onClose}>
+                      Done
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <div className="validator-results">
@@ -480,6 +488,18 @@ export function ValidatorModal({ paths, onClose }: ValidatorModalProps) {
                                         : "\u2139"}
                                     </span>
                                     <span className="validation-message">{issue.message}</span>
+                                    {issue.field === BROKEN_FIELD && onFixBroken && (
+                                      <button
+                                        className="validator-fix-btn"
+                                        title="Find this song in the chart browser; the download replaces this broken copy"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          onFixBroken(song);
+                                        }}
+                                      >
+                                        Fix it
+                                      </button>
+                                    )}
                                     {isFixable(issue) && !isEditing && (
                                       <button
                                         className="validator-fix-btn"

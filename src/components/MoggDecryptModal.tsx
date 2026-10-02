@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { X } from "lucide-react";
 
 interface MoggDecryptModalProps {
   paths: string[];
@@ -63,8 +64,8 @@ export function MoggDecryptModal({ paths, onClose }: MoggDecryptModalProps) {
       >
         <div className="art-search-header">
           <h3>Decrypt MOGGs</h3>
-          <button className="art-search-close" onClick={onClose}>
-            &times;
+          <button className="art-search-close" aria-label="Close" onClick={onClose}>
+            <X size={18} />
           </button>
         </div>
 
@@ -76,9 +77,11 @@ export function MoggDecryptModal({ paths, onClose }: MoggDecryptModalProps) {
                 package{paths.length !== 1 ? "s" : ""} so YARG can play them.
                 This modifies the files in-place.
               </p>
-              <button className="mogg-decrypt-start" onClick={handleStart}>
-                Decrypt All
-              </button>
+              <div className="dialog-footer">
+                <button className="mogg-decrypt-start" onClick={handleStart}>
+                  Decrypt All
+                </button>
+              </div>
             </>
           )}
 
@@ -134,9 +137,11 @@ export function MoggDecryptModal({ paths, onClose }: MoggDecryptModalProps) {
                   ))}
                 </div>
               )}
-              <button className="mogg-decrypt-start" onClick={onClose}>
-                Done
-              </button>
+              <div className="dialog-footer">
+                <button className="mogg-decrypt-start" onClick={onClose}>
+                  Done
+                </button>
+              </div>
             </div>
           )}
 

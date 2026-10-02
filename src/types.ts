@@ -10,6 +10,9 @@ export interface SongSummary {
   game_origin: string;
   // File modified time (Unix seconds); drives the "Recently added" sort.
   added_at: number;
+  // Artist and title from song.ini / songs.dta (empty if unreadable).
+  artist: string;
+  song_title: string;
 }
 
 // Library list sort order: "name" = alphabetical (default), "recent" = newest
@@ -68,7 +71,22 @@ export interface SongDetails {
 export interface SongValidationResult {
   path: string;
   display_name: string;
+  // Used by "Fix it" to pre-search the chart browser.
+  artist: string;
+  title: string;
   issues: ValidationIssue[];
+}
+
+// Issues with this field mean the song can't play (missing chart or audio);
+// the UI offers "Fix it" (re-download and replace) for them.
+export const BROKEN_FIELD = "broken";
+
+// A broken song being replaced through the chart browser.
+export interface FixTarget {
+  path: string;
+  name: string;
+  artist: string;
+  title: string;
 }
 
 export interface BatchValidateResult {
@@ -161,6 +179,9 @@ export interface RvSongFile {
   download_url: string;
   // Non-empty when hosted off-site (Google Drive, Mediafire, …).
   external_url: string;
+  // True when rv_download can fetch the off-site link itself (Drive file or
+  // folder, Mediafire, Dropbox, shorteners); false = "Open ↗" only.
+  external_auto: boolean;
   // Per-instrument difficulty tier; >=1 = charted, 0/-1/null = not present.
   diff_guitar: number | null;
   diff_bass: number | null;
@@ -169,12 +190,68 @@ export interface RvSongFile {
   diff_keys: number | null;
 }
 
+// Result of `delete_files`. Deletes go to the Recycle Bin; paths the bin refused
+// (some USB / network drives) are listed in not_trashable, untouched, so the UI
+// can ask before retrying them with `permanent: true`.
+export interface DeleteResult {
+  failures: string[];
+  not_trashable: string[];
+}
+
 export interface RvBrowseResult {
   songs: RvSongFile[];
   total_available: number;
   total_filtered: number;
   returned: number;
   page: number;
+}
+
+// Offline RhythmVerse catalog (catalog.rs). `ready` = a full build has
+// finished at least once, so browsing can use the local copy.
+export interface CatalogStatus {
+  ready: boolean;
+  syncing: boolean;
+  mode: "" | "full" | "delta";
+  pages_done: number;
+  pages_total: number;
+  rows: number;
+  last_sync: string;
+  error: string | null;
+}
+
+export interface CatalogQuery {
+  text?: string;
+  charter?: string;
+  genre?: string;
+  gameformat?: string;
+  instruments?: string[];
+  yearMin?: number | null;
+  yearMax?: number | null;
+  lengthMin?: number | null;
+  lengthMax?: number | null;
+  addedWithinDays?: number | null;
+  hideOwned?: boolean;
+  sortBy?: string;
+  sortOrder?: "ASC" | "DESC";
+  page?: number;
+  records?: number;
+  random?: boolean;
+}
+
+export interface FacetCount {
+  value: string;
+  count: number;
+}
+
+export interface CatalogFacets {
+  genres: FacetCount[];
+  formats: FacetCount[];
+}
+
+export interface CatalogSuggestion {
+  kind: "artist" | "title";
+  value: string;
+  count: number;
 }
 
 export interface RvDownloadResult {
@@ -190,6 +267,8 @@ export interface RvDownloadRecord {
   // Empty when unknown (pre-tracking records / editor links) — treated as
   // "don't flag updates" and backfilled on the next browse.
   rv_upload_date: string;
+  // A "Got it" mark with no on-disk path; only these can be undone.
+  manual: boolean;
 }
 
 export interface UpdateInfo {

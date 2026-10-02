@@ -1,5 +1,16 @@
 use crate::dta::types::SongMetadata;
 
+/// Read a song.ini as text. Most are UTF-8, but older ones are Windows-1252
+/// (e.g. "Queensrÿche" stored as a single 0xFF byte); those used to fail a
+/// strict UTF-8 read, which hid the song from the library entirely.
+pub fn read_song_ini(path: &std::path::Path) -> std::io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    Ok(match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(e) => encoding_rs::WINDOWS_1252.decode(e.as_bytes()).0.into_owned(),
+    })
+}
+
 /// Parse a song.ini file into SongMetadata.
 /// song.ini is a simple INI format with `[song]` or `[Song]` section header
 /// and `key = value` pairs.
