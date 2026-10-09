@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useMemo, useState, useEffect, useRef } from "react";
 import { FixedSizeList } from "react-window";
 import type { SongSummary, SortMode } from "../types";
 import sourcesData from "../data/sources.json";
@@ -32,9 +32,13 @@ interface FileListProps {
   modifiedPaths: Set<string>;
   multiSelected: Set<string>;
   onToggleMultiSelect: (path: string) => void;
+  onSetMultiSelectMany: (paths: string[], checked: boolean) => void;
 }
 
-export function FileList({ songs, selectedPath, filter, gameOriginFilter, sortBy, onSelect, modifiedPaths, multiSelected, onToggleMultiSelect }: FileListProps) {
+export function FileList({ songs, selectedPath, filter, gameOriginFilter, sortBy, onSelect, modifiedPaths, multiSelected, onToggleMultiSelect, onSetMultiSelectMany }: FileListProps) {
+  // The last row clicked or checked; Shift+click checks everything between it
+  // and the clicked row. Kept as a path so it survives re-sorting and filtering.
+  const anchorPath = useRef<string | null>(null);
   // Measure the list's actual container so the virtualized list tracks pane
   // resizes and window resizes/fullscreen (window.innerHeight-at-render did not).
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
@@ -93,6 +97,23 @@ export function FileList({ songs, selectedPath, filter, gameOriginFilter, sortBy
     );
   }
 
+  // Shift+click: give every row from the anchor to `index` the clicked row's
+  // new checked state (so a range can be checked or unchecked in one go).
+  const handleShiftClick = (index: number) => {
+    const path = sorted[index].path;
+    const checked = !multiSelected.has(path);
+    const anchorIndex = anchorPath.current === null
+      ? -1
+      : sorted.findIndex((s) => s.path === anchorPath.current);
+    if (anchorIndex === -1) {
+      onToggleMultiSelect(path);
+    } else {
+      const [from, to] = anchorIndex < index ? [anchorIndex, index] : [index, anchorIndex];
+      onSetMultiSelectMany(sorted.slice(from, to + 1).map((s) => s.path), checked);
+    }
+    anchorPath.current = path;
+  };
+
   const Row = ({ index, style }: { index: number; style: React.CSSProperties }) => {
     const song = sorted[index];
     const isSelected = song.path === selectedPath;
@@ -104,14 +125,31 @@ export function FileList({ songs, selectedPath, filter, gameOriginFilter, sortBy
       <div
         style={style}
         className={`file-list-item ${isSelected ? "selected" : ""} ${isModified ? "modified" : ""} ${isMultiSelected ? "multi-selected" : ""}`}
-        onClick={() => onSelect(song.path)}
+        // Stop Shift+click from highlighting text across the rows.
+        onMouseDown={(e) => { if (e.shiftKey) e.preventDefault(); }}
+        onClick={(e) => {
+          if (e.shiftKey) {
+            handleShiftClick(index);
+          } else {
+            anchorPath.current = song.path;
+            onSelect(song.path);
+          }
+        }}
       >
         <input
           type="checkbox"
           className="file-list-checkbox"
           checked={isMultiSelected}
-          onClick={(e) => e.stopPropagation()}
-          onChange={() => onToggleMultiSelect(song.path)}
+          readOnly
+          onClick={(e) => {
+            e.stopPropagation();
+            if (e.shiftKey) {
+              handleShiftClick(index);
+            } else {
+              anchorPath.current = song.path;
+              onToggleMultiSelect(song.path);
+            }
+          }}
         />
         {originInfo && (
           <img

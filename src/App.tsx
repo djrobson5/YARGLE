@@ -34,6 +34,7 @@ function App() {
     openFolder,
     selectSong,
     toggleMultiSelect,
+    setMultiSelectMany,
     clearMultiSelect,
     selectAllPaths,
     updateMetadata,
@@ -302,6 +303,7 @@ function App() {
           )}
           multiSelected={multiSelected}
           onToggleMultiSelect={toggleMultiSelect}
+          onSetMultiSelectMany={setMultiSelectMany}
         />
       </div>
       <div

@@ -169,6 +169,18 @@ export function useSongFiles() {
     });
   }, []);
 
+  // Shift-click range: every path takes the same checked state.
+  const setMultiSelectMany = useCallback((paths: string[], checked: boolean) => {
+    setMultiSelected(prev => {
+      const next = new Set(prev);
+      for (const p of paths) {
+        if (checked) next.add(p);
+        else next.delete(p);
+      }
+      return next;
+    });
+  }, []);
+
   const clearMultiSelect = useCallback(() => {
     setMultiSelected(new Set());
   }, []);
@@ -210,6 +222,7 @@ export function useSongFiles() {
     openFolder,
     selectSong,
     toggleMultiSelect,
+    setMultiSelectMany,
     clearMultiSelect,
     selectAllPaths,
     updateMetadata,
