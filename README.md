@@ -85,7 +85,7 @@ Build a folder layout from tags like `{genre}/{artist}/{artist} - {title}`, see 
 
 **Windows:** grab `yargle.exe` from the [latest release](https://github.com/djrobson5/YARGLE/releases/latest) and run it. There's no installer, and once it's running YARGLE keeps itself up to date.
 
-**macOS:** there's no prebuilt download yet, so [build it from source](#building-from-source) and drag `YARGLE.app` into Applications.
+**macOS:** download `YARGLE_<version>_universal.dmg` from the [latest release](https://github.com/djrobson5/YARGLE/releases/latest), open it, and drag YARGLE into Applications. It runs natively on both Apple Silicon and Intel Macs. The app isn't notarized by Apple yet, so the first time you open it macOS will block it: go to **System Settings → Privacy & Security** and click **Open Anyway**.
 
 ## Building from source
 
@@ -98,7 +98,7 @@ npm run tauri build   # release build (see below for where it lands)
 ```
 
 - **Windows:** `src-tauri/target/release/yargle.exe`
-- **macOS:** `npm run tauri build -- --bundles app` produces `src-tauri/target/release/bundle/macos/YARGLE.app`.
+- **macOS:** for just the app, run `npm run tauri build -- --bundles app`, which produces `src-tauri/target/release/bundle/macos/YARGLE.app`. For the universal (Apple Silicon + Intel) installer, run `rustup target add x86_64-apple-darwin` once, then `npm run tauri build -- --target universal-apple-darwin --bundles app,dmg`, which produces `src-tauri/target/universal-apple-darwin/release/bundle/dmg/YARGLE_<version>_universal.dmg`.
 
 Stack: [Tauri 2](https://tauri.app/) (Rust backend), React 19 + TypeScript + Vite frontend.
 

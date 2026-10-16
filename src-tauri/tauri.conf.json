@@ -15,7 +15,10 @@
       "icons/128x128.png",
       "icons/icon.png",
       "icons/icon.ico"
-    ]
+    ],
+    "macOS": {
+      "signingIdentity": "-"
+    }
   },
   "app": {
     "windows": [
