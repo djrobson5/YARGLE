@@ -111,6 +111,7 @@ pub async fn check_for_update() -> Result<Option<UpdateInfo>, String> {
     }
 
     // Prefer an asset literally named yargle.exe, else the first .exe asset.
+    // Only Windows can self-install it; elsewhere just offer the release page.
     let download_url = release
         .assets
         .iter()
@@ -122,7 +123,7 @@ pub async fn check_for_update() -> Result<Option<UpdateInfo>, String> {
                 .find(|a| a.name.to_ascii_lowercase().ends_with(".exe"))
         })
         .map(|a| a.browser_download_url.clone())
-        .filter(|u| u.starts_with("http"));
+        .filter(|u| cfg!(windows) && u.starts_with("http"));
 
     Ok(Some(UpdateInfo {
         version: release.tag_name.trim_start_matches(['v', 'V']).to_string(),

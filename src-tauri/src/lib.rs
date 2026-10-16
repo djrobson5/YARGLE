@@ -27,6 +27,11 @@ pub fn run() {
                     set_title_bar_colors(hwnd.0 as _, true);
                 }
             }
+            // Dark native title bar so the window chrome matches the app.
+            #[cfg(target_os = "macos")]
+            if let Some(window) = tauri::Manager::get_webview_window(app, "main") {
+                let _ = window.set_theme(Some(tauri::Theme::Dark));
+            }
             Ok(())
         })
         .on_window_event(|_window, _event| {

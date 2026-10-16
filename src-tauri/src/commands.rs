@@ -650,17 +650,43 @@ pub struct ScoreInfo {
     pub nightly: ScoreFileInfo,
 }
 
+/// YARG's Unity persistent-data dir: `%USERPROFILE%\AppData\LocalLow\YARC\YARG`
+/// on Windows, `~/Library/Application Support/YARC/YARG` on macOS, and
+/// `~/.config/unity3d/YARC/YARG` on Linux.
+fn yarg_data_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let local_app_data = std::env::var("LOCALAPPDATA").ok()?;
+        Some(PathBuf::from(local_app_data).parent()?.join("LocalLow").join("YARC").join("YARG"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").ok()?;
+        Some(PathBuf::from(home).join("Library/Application Support/YARC/YARG"))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let config = std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|_| std::env::var("HOME").map(|h| PathBuf::from(h).join(".config")))
+            .ok()?;
+        Some(config.join("unity3d").join("YARC").join("YARG"))
+    }
+}
+
 fn yarg_scores_path(variant: &str) -> Option<PathBuf> {
-    let local_app_data = std::env::var("LOCALAPPDATA").ok()?;
-    let base = PathBuf::from(local_app_data)
-        .parent()?
-        .join("LocalLow")
-        .join("YARC")
-        .join("YARG")
-        .join(variant)
-        .join("scores")
-        .join("scores.db");
-    Some(base)
+    let base = yarg_data_dir()?;
+    let scores = |v: &str| base.join(v).join("scores").join("scores.db");
+    let path = scores(variant);
+    // The launcher's stable macOS build keeps its data under `dev` rather than
+    // `release`; use that when there's no `release` copy.
+    if cfg!(target_os = "macos") && variant == "release" && !path.exists() {
+        let dev = scores("dev");
+        if dev.exists() {
+            return Some(dev);
+        }
+    }
+    Some(path)
 }
 
 fn score_file_info(path: &Path) -> ScoreFileInfo {

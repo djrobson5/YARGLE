@@ -240,7 +240,7 @@ function App() {
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === "s") {
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
         e.preventDefault();
         saveSong();
       }

@@ -623,6 +623,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs a local CON file from the original dev machine"]
     fn dump_png_xbox() {
         let path = r"C:\Users\djrob\.gemini\antigravity\scratch\YARGLE\My Chemical Romance - Blood [Hidden Track] (Jaded)_chps_rb3con";
         let data = std::fs::read(path).expect("Failed to read CON file");
@@ -655,6 +656,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs a local CON file from the original dev machine"]
     fn dump_png_xbox_large() {
         let path = r"C:\Users\djrob\.gemini\antigravity\scratch\YARGLE\Gram Parsons - 1000 Wedding";
         let data = std::fs::read(path).expect("Failed to read CON file");

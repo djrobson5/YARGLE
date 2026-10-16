@@ -4,6 +4,7 @@ import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import type { DeleteResult, SongSummary } from "../types";
 import { ChevronDown, ChevronUp, X } from "lucide-react";
 import { InstrumentIcon } from "./YargIcon";
+import { FILE_MANAGER, TRASH } from "../platform";
 
 interface DuplicateModalProps {
   songs: SongSummary[];
@@ -302,7 +303,7 @@ export function DuplicateModal({ songs, rootFolder, onClose }: DuplicateModalPro
             <span className="rename-current">{fileName(entry.path)}</span>
             <button
               className="dup-reveal-btn"
-              title="Show in Explorer"
+              title={`Show in ${FILE_MANAGER}`}
               onClick={(ev) => {
                 ev.preventDefault();
                 invoke("reveal_in_explorer", { path: entry.path }).catch(() => {});
@@ -522,8 +523,8 @@ export function DuplicateModal({ songs, rootFolder, onClose }: DuplicateModalPro
                   <div className="score-sync-confirm">
                     <p>
                       {pendingPermanent.length} file
-                      {pendingPermanent.length !== 1 ? "s are" : " is"} on a drive with no
-                      Recycle Bin. Delete permanently? This cannot be undone.
+                      {pendingPermanent.length !== 1 ? "s are" : " is"} on a drive with no{" "}
+                      {TRASH}. Delete permanently? This cannot be undone.
                     </p>
                     <div className="score-sync-confirm-btns">
                       <button
@@ -548,7 +549,7 @@ export function DuplicateModal({ songs, rootFolder, onClose }: DuplicateModalPro
                 ) : confirmDelete ? (
                   <div className="score-sync-confirm">
                     <p>
-                      Move {selected.size} cop{selected.size !== 1 ? "ies" : "y"} to the Recycle Bin?
+                      Move {selected.size} cop{selected.size !== 1 ? "ies" : "y"} to the {TRASH}?
                     </p>
                     <div className="score-sync-confirm-btns">
                       <button
@@ -556,7 +557,7 @@ export function DuplicateModal({ songs, rootFolder, onClose }: DuplicateModalPro
                         onClick={() => handleDelete()}
                         disabled={deleting}
                       >
-                        {deleting ? "Deleting..." : "Move to Recycle Bin"}
+                        {deleting ? "Deleting..." : `Move to ${TRASH}`}
                       </button>
                       <button
                         className="score-sync-btn score-sync-btn-cancel"

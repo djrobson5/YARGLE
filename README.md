@@ -1,8 +1,8 @@
 # YARGLE
 
-**YARG Library Editor**: a Windows desktop app for managing custom-song libraries for [YARG](https://yarg.in/) (Yet Another Rhythm Game) and other Rock Band–style rhythm games.
+**YARG Library Editor**: a desktop app for Windows and macOS for managing custom-song libraries for [YARG](https://yarg.in/) (Yet Another Rhythm Game) and other Rock Band–style rhythm games.
 
-[![Latest release](https://img.shields.io/github/v/release/djrobson5/YARGLE?label=download&color=1ec8ff)](https://github.com/djrobson5/YARGLE/releases/latest) ![Windows](https://img.shields.io/badge/platform-Windows-0e1626) [![MIT license](https://img.shields.io/badge/license-MIT-0e1626)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/djrobson5/YARGLE?label=download&color=1ec8ff)](https://github.com/djrobson5/YARGLE/releases/latest) ![Windows | macOS](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0e1626) [![MIT license](https://img.shields.io/badge/license-MIT-0e1626)](LICENSE)
 
 ![YARGLE with a 21,000-song library open](docs/media/hero.png)
 
@@ -51,9 +51,9 @@ Build a folder layout from tags like `{genre}/{artist}/{artist} - {title}`, see 
 - **Organize** into folders from a naming template, with a full preview first
 - **Validator** catches missing chart or audio files and missing or invalid metadata that can make YARG skip or misidentify a song. Most issues have a one-click **Fix**, and a broken song can be re-downloaded from RhythmVerse with **Fix it**
 - **Duplicate finder** compares the charts themselves, so it can tell identical copies (safe to remove) from different versions by other charters
-- **Deletes go to the Recycle Bin**, never straight off the disk
+- **Deletes go to the Recycle Bin** (or the Trash on macOS), never straight off the disk
 - **MOGG decryption** (via [themethod3](https://github.com/DarkRTA/themethod3))
-- **YARG scores**: best score per instrument and difficulty, pulled from both YARG Stable and Nightly
+- **YARG scores**: best score per instrument and difficulty, pulled from both YARG Stable and Nightly, on Windows and macOS
 
 <table>
   <tr>
@@ -79,21 +79,26 @@ Build a folder layout from tags like `{genre}/{artist}/{artist} - {title}`, see 
 ### Look and feel
 - Dark theme with YARG's own colors, fonts, and instrument and difficulty icons
 - Resizable panes, a virtualized list that stays smooth at 20k+ songs, and sorting by name or **recently added**
-- One-click in-app updates: when a new release is out, **Update now** downloads it and restarts YARGLE
+- One-click in-app updates on Windows: when a new release is out, **Update now** downloads it and restarts YARGLE (on macOS YARGLE links to the release page instead)
 
 ## Install
 
-Grab `yargle.exe` from the [latest release](https://github.com/djrobson5/YARGLE/releases/latest) and run it. There's no installer, and once it's running YARGLE keeps itself up to date. Windows only for now.
+**Windows:** grab `yargle.exe` from the [latest release](https://github.com/djrobson5/YARGLE/releases/latest) and run it. There's no installer, and once it's running YARGLE keeps itself up to date.
+
+**macOS:** there's no prebuilt download yet, so [build it from source](#building-from-source) and drag `YARGLE.app` into Applications.
 
 ## Building from source
 
-Prerequisites: [Rust](https://rustup.rs/) (stable) and [Node.js](https://nodejs.org/).
+Prerequisites: [Rust](https://rustup.rs/) (stable) and [Node.js](https://nodejs.org/). On macOS you also need the Xcode Command Line Tools (`xcode-select --install`).
 
 ```bash
 npm install
 npm run tauri dev     # development build with hot reload
-npm run tauri build   # release build -> src-tauri/target/release/yargle.exe
+npm run tauri build   # release build (see below for where it lands)
 ```
+
+- **Windows:** `src-tauri/target/release/yargle.exe`
+- **macOS:** `npm run tauri build -- --bundles app` produces `src-tauri/target/release/bundle/macos/YARGLE.app`.
 
 Stack: [Tauri 2](https://tauri.app/) (Rust backend), React 19 + TypeScript + Vite frontend.
 

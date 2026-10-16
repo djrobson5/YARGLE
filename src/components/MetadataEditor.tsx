@@ -8,6 +8,7 @@ import { IconSelector } from "./IconSelector";
 import { SongScores } from "./SongScores";
 import { DifficultyRing, TIER_LABELS } from "./DifficultyRing";
 import { ChartNoAxesColumn, FolderOpen, Link2, Music, Save, Trash2 } from "lucide-react";
+import { FILE_MANAGER, FILE_MANAGER_SHORT, TRASH } from "../platform";
 
 interface MetadataEditorProps {
   details: SongDetails;
@@ -249,11 +250,11 @@ export function MetadataEditor({
             }}
             title={
               details.is_folder
-                ? "Open this song's folder in File Explorer"
-                : "Show this file in File Explorer"
+                ? `Open this song's folder in ${FILE_MANAGER}`
+                : `Show this file in ${FILE_MANAGER}`
             }
           >
-            <FolderOpen size={15} /> Explorer
+            <FolderOpen size={15} /> {FILE_MANAGER_SHORT}
           </button>
           <button
             className="chart-btn"
@@ -300,8 +301,8 @@ export function MetadataEditor({
           <div className="delete-confirm-bar">
             <span>
               {needsPermanent
-                ? "This drive has no Recycle Bin. Delete permanently? This cannot be undone."
-                : "Move this song to the Recycle Bin?"}
+                ? `This drive has no ${TRASH}. Delete permanently? This cannot be undone.`
+                : `Move this song to the ${TRASH}?`}
             </span>
             {deleteError && <span className="delete-error">{deleteError}</span>}
             <div className="delete-confirm-btns">
@@ -327,7 +328,7 @@ export function MetadataEditor({
                   ? "Deleting..."
                   : needsPermanent
                     ? "Delete Permanently"
-                    : "Move to Recycle Bin"}
+                    : `Move to ${TRASH}`}
               </button>
               <button
                 className="delete-confirm-no"
